@@ -14,7 +14,7 @@ process copyResourceFiles {
     cp ${params.genome} .
     cp ${params.gtf} .
 
-    gunzip ${params.projectDir}${params.resourcesDir}/*.gz
+    gunzip *.gz
 
     """
 
@@ -35,17 +35,17 @@ process generateIndex {
 
     """
 
-    Overhang=$((${params.read_length} - 1))
+    Overhang=`expr ${params.read_length} - 1`
 
     if [ ! -d "${params.genomeName}" ]; then
     mkdir ${params.genomeName}
     fi
 
-    STAR --runThreadN 6 \
-    --runMode genomeGenerate \
-    --genomeDir ${params.genomeName} \
-    --genomeFastaFiles ${fasta} \
-    --sjdbGTFfile ${gtf} \
+    STAR --runThreadN 6 \\
+    --runMode genomeGenerate \\
+    --genomeDir ${params.genomeName} \\
+    --genomeFastaFiles ${fasta} \\
+    --sjdbGTFfile ${gtf} \\
     --sjdbOverhang \${Overhang}
 
     """
@@ -62,10 +62,11 @@ process readFastqFiles {
 
     """
 
-    nrow=\$(wc -l ${input_csv})
-    for i in \$( seq 2 \$nrow )
+    nrow=\$(wc -l ${params.input_csv} | cut -d' ' -f1)
+    length=`expr \$nrow + 1`
+    for i in \$( seq 2 \$length )
     do
-      awk -v rownum=\${i} -F "\"*,\"*" 'FNR==rownum {print \$1}' ${input_csv} | xargs -I{} ln {} .
+      awk -v rownum="\${i}" -F "\\"*,\\"*" 'FNR==rownum {print \$1}' ${params.input_csv} | xargs -I{} cp {} .
     done
 
     """
@@ -73,9 +74,9 @@ process readFastqFiles {
 
 process splitfq {
 
-    cpus = '${params.num_threads}'
+    cpus = '32'
     mem = '20G'
-    time = '00:05:00'
+    time = '00:15:00'
 
     input:
     each file from fastqs_ch
@@ -90,43 +91,39 @@ process splitfq {
 
     basefile=\$(basename ${file} | cut -f 1 -d '.')
 
-    if [! -d "${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge"] ; then
+    if [ ! -d "${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge" ]; then
         mkdir ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge
     fi
 
-    n=`expr $nreads / ${params.num_threads}`
-    n=`expr $n + 1`
-    nl=`expr $n \* 4`
-
-    if [[ ${file} =~ \.gz$ ]] ; then
+    if [[ ${file} =~ \\.gz\$ ]]; then
       pigz -dc ${file} | head -n 4000000 | pigz > ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq.gz
-      smallsize=$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq.gz)
+      smallsize=\$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq.gz)
       rm ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq.gz
-      nreads=$(expr \${fullsize} \* 1000000 / \${smallsize})
-      n=`expr $nreads / ${params.num_threads}`
-      n=`expr $n + 1`
-      nl=`expr $n \* 4`
+      nreads=\$(expr \${fullsize} \\* 1000000 / \${smallsize})
+      n=`expr \$nreads / ${params.num_threads}`
+      n=`expr \$n + 1`
+      nl=`expr \$n \\* 4`
       pigz -dc -p ${params.num_threads} ${file} | split --lines=\$nl --filter=''pigz' -p '${params.num_threads}' > \$FILE.gz' - ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}${params.projectName}
     else
       cat ${file} | head -n 4000000 > ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq
-      smallsize=$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq)
+      smallsize=\$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq)
       rm ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq
-      nreads=$(expr \${fullsize} \* 1000000 / \${smallsize})
-      n=`expr $nreads / ${params.num_threads}`
-      n=`expr $n + 1`
-      nl=`expr $n \* 4`
+      nreads=\$(expr \${fullsize} \\* 1000000 / \${smallsize})
+      n=`expr \$nreads / ${params.num_threads}`
+      n=`expr \$n + 1`
+      nl=`expr \$n \\* 4`
       split --lines=\$nl --filter=''pigz' -p '${params.num_threads}' > \$FILE.gz' ${file} ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}${params.projectName}
     fi
 
-    ls ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}* | sed "s|${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}*||"  > \${basefile}_tempfiles.txt
+    ls ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}* | sed "s|${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}||"  > \${basefile}_tempfiles.txt
     """
 }
 
 process fqFilter {
 
-    cpus = '${params.num_threads}'
+    cpus = '32'
     mem = '20G'
-    time = '00:05:00'
+    time = '00:30:00'
 
     input:
     each file from tempfiles_ch
@@ -134,29 +131,31 @@ process fqFilter {
     output:
     file "*.bamlist.txt" into bamlists_ch
     env read_layout into read_layout_ch
-    file "*.bcstats.txt" into bcstats_ch
+    file "*.BCstats.txt" into bcstats_ch
 
 
     """
-    tIFS=\$IFS
-    tGLOBIGNORE=\$GLOBIGNORE
-    IFS=\$'\r\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat ${file}))'
-    IFS=\$tIFS
-    GLOBIGNORE=\$tGLOBIGNORE
+
+    IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat ${file}))'
 
     filename=\$(basename ${file})
 
     parentfq=\${filename%"_tempfiles.txt"}
 
-    for x in \${temp_files} ; do perl ${zumisdir}/fqfilter_v2.pl ${params.input_csv} samtools rscript pigz ${params.projectDir}${params.binDir} ${x} ${params.projectDir}${params.outputDir} ${params.projectName} ${params.num_threads} \${parentfq} & done
+    basefile=\$(echo \${parentfq} | cut -f 1 -d '.')
+
+    for x in "\${temp_files[@]}" 
+    do 
+        perl ${params.projectDir}${params.binDir}fqfilter_v2.pl ${params.input_csv} samtools Rscript pigz ${params.projectDir}${params.binDir} \${x} ${params.UMI_phred} \\
+        ${params.projectName} ${params.num_threads} \${parentfq} \${basefile} ${params.BC_num_bases} ${params.BC_phred} ${params.UMI_num_bases} ${params.projectDir}${params.outputDir}
+    done
     wait
-    basefile=\$(\${filename} | cut -f 1 -d '.')
     ls ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.*.filtered.tagged.bam > \${basefile}_${params.projectName}.bamlist.txt
     
     f=`head -n1 \${basefile}_${params.projectName}.bamlist.txt`
-    flag=`$samtoolsexc view $f | head -n1 | cut -f2`
+    flag=`samtools view \$f | head -n1 | cut -f2`
 
-    if [[ $flag == 4 ]]; then
+    if [[ \$flag == 4 ]]; then
     read_layout="SE"
     else
     read_layout="PE"
@@ -168,7 +167,7 @@ process fqFilter {
 
 process collectBCstats {
 
-    cpus = '${params.num_threads}'
+    cpus = '32'
     mem = '20G'
     time = '00:05:00'
 
@@ -181,53 +180,81 @@ process collectBCstats {
     """
     bcfiles=(${files.join(" ")})
 
-    for f in "\${bcfiles}"
+    for f in "\${bcfiles[@]}"
     do
-        cat ${f} >> ${params.projectName}.BCstats.txt
+        cat \${f} >> ${params.projectName}.BCstats.txt
+    done
     """
 
 }
 
 process barcode_detect {
 
-    cpus = '${params.num_threads}'
-    mem = '20G'
-    time = '00:05:00'
+    cpus = '32'
+    mem = '40G'
+    time = '04:30:00'
 
     input:
     file file from cat_bcstats_ch
 
     output:
     file "*.detected_cells.pdf" into detected_cells_ch
-    file "*.kept_barcodes.txt" into kept_barcodes_ch
+    file "*_kept_barcodes.txt" into kept_barcodes_ch
     file("*.BCbinning.txt") optional true into bc_binning_ch
     file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch
 
 
     """
-    #!/usr/bin/env rscript
+    #!/usr/bin/env Rscript --no-environ
 
     library(methods)
     library(data.table)
-    library(yaml)
     library(ggplot2)
+    library(inflection)
+    library(ggrastr)
+    library(cowplot)
+    library(stringdist)
+    library(mclust)
 
     ##########################
 
-    opt\$barcode_sharing <- "${params.barcode_sharing}"
-    opt\$barcode_file <- "${params.barcode_file}"
-    opt\$barcode_num <- "${params.barcode_num}"
-    opt\$automatic <- ${params.barcode_automatic}
-    opt\$out_dir <- "${params.projectDir}${params.outputDir}"
-    opt\$project <- "${params.projectName}"
+    
+    barcode_sharing <- "${params.barcode_sharing}"
+    barcode_file <- "${params.barcode_file}"
+    if (barcode_file == "") barcode_file <- NULL
+    barcode_num <- "${params.barcode_num}"
+    if (barcode_num == "") barcode_num <- NULL
+    bcauto <- as.logical("${params.barcode_automatic}")
+    out_dir <- "${params.projectDir}${params.outputDir}"
+    project <- "${params.projectName}"
+    zUMIs_directory <- "${params.projectDir}${params.binDir}"
+    n_reads_per_cell <- "${params.n_reads_per_cell}"
+    barcode_binning <- "${params.barcode_binning}"
+    num_threads <- "${params.num_threads}"
+    barcode_sharing <- "${params.barcode_sharing}"
+    if (barcode_sharing == "") barcode_sharing <- NULL
+
+    input <- read.csv("${params.input_csv}")
+
+    sequence_files <- as.list(NULL)
+    for (i in 1:nrow(input)){
+        name <- input\$name[i]
+        base_definition <- c(if (is.na(input\$cDNA[i])) NULL else paste0("cDNA(",input\$cDNA[i],")"),if (is.na(input\$BC[i])) NULL else paste0("BC(",input\$BC[i],")"),if (is.na(input\$UMI[i])) NULL else paste0("UMI(",input\$UMI[i],")"))
+        complete<- NULL
+        complete\$name <- name
+        complete\$base_definition <- base_definition
+        complete\$filter_cutoffs <- input\$filter_cutoffs[i]
+        complete\$correct_frameshift <- input\$correct_frameshift[i]
+        sequence_files[[paste0("file",i)]] <- complete
+    }
 
 
-    source(paste0(opt\$zUMIs_directory,"/barcodeIDFUN.R"))
+    source(paste0(zUMIs_directory,"/barcodeIDFUN.R"))
     options(datatable.fread.input.cmd.message=FALSE)
-    data.table::setDTthreads(threads=opt\$num_threads)
-    if(!is.null(opt\$barcode_sharing)){
-    if(opt\$barcode_sharing == ""){
-        opt\$barcode_sharing <- NULL
+    data.table::setDTthreads(threads=num_threads)
+    if(!is.null(barcode_sharing)){
+    if(barcode_sharing == ""){
+        barcode_sharing <- NULL
     }
     }
 
@@ -237,23 +264,23 @@ process barcode_detect {
 
     #read file with barcodecounts
     # bc is the vector of barcodes to keep
-    bccount<-cellBC(bcfile      = opt\$barcode_file,
-            bcnum       = opt\$barcode_num,
-            bcauto      = opt\$automatic,
+    bccount<-cellBC(bcfile      = barcode_file,
+            bcnum       = barcode_num,
+            bcauto      = bcauto,
             bccount_file= "${file}",
-            outfilename = paste0(opt\$project,".detected_cells.pdf"))
+            outfilename = paste0(project,".detected_cells.pdf"))
 
-    fwrite(bccount,file=paste0(opt\$project,"kept_barcodes.txt"))
+    fwrite(bccount,file=paste0(project,"_kept_barcodes.txt"))
 
     #check if binning of adjacent barcodes should be run
-    if(opt\$BarcodeBinning > 0 | !is.null(opt\$barcode_sharing)){
+    if(barcode_binning > 0 | !is.null(barcode_sharing)){
     binmap <- BCbin(bccount_file = "${file}",
                     bc_detected  = bccount)
-    fwrite(binmap,file=paste0(opt\$project,".BCbinning.txt"))
+    fwrite(binmap,file=paste0(project,".BCbinning.txt"))
     #update the number reads in BCcount table
     binmap_additional <- binmap[, .(addtl = sum(n)), by = trueBC]
     bccount[match(binmap_additional\$trueBC,XC),n := n + binmap_additional\$addtl]
-    fwrite(bccount,file=paste0(opt\$project,"kept_barcodes_binned.txt"))
+    fwrite(bccount,file=paste0(project,"kept_barcodes_binned.txt"))
     }
 
     ##############################################################
@@ -263,3 +290,4 @@ process barcode_detect {
 
 
 }
+
