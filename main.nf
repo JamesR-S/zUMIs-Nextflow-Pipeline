@@ -82,7 +82,8 @@ process splitfq {
     each file from fastqs_ch
 
     output:
-    file '*_tempfiles.txt' into tempfiles_ch
+    file '*_tempfiles.txt' into tempfiles_ch1
+    file '*_tempfiles.txt' into tempfiles_ch2
 
 
     """
@@ -126,7 +127,7 @@ process fqFilter {
     time = '00:30:00'
 
     input:
-    each file from tempfiles_ch
+    each file from tempfiles_ch1
 
     output:
     file "*.bamlist.txt" into bamlists_ch
@@ -291,3 +292,46 @@ process barcode_detect {
 
 }
 
+bc_binning_ch.ifEmpty('EMPTY')
+
+process BC_bin/bam_collate {
+
+    cpus = '32'
+    mem = '40G'
+    time = '04:30:00'
+
+    input:
+    val BCbinning from bc_binning_ch
+    each file from tempfiles_ch1
+
+    output:
+    file "*.detected_cells.pdf" into detected_cells_ch
+    file "*_kept_barcodes.txt" into kept_barcodes_ch
+    file("*.BCbinning.txt") optional true into bc_binning_ch
+    file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch
+
+
+    """
+    IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat ${file}))'
+
+    filename=\$(basename ${file})
+
+    parentfq=\${filename%"_tempfiles.txt"}
+
+    basefile=\$(echo \${parentfq} | cut -f 1 -d '.')
+
+    if [[ -f "${BCbinning}" ]] ; then
+        for x in "\${temp_files[@]}" ; do
+            rawbam="${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.${x}.raw.tagged.bam"
+            fixedbam="${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.${x}.filtered.tagged.bam"
+            mv ${fixedbam} ${rawbam}
+            perl ${params.projectDir}${params.binDir}correct_BCtag.pl \${rawbam} \${fixedbam} ${BCbinning} samtools &
+        done
+        wait
+    fi
+
+    for x in "\${temp_files[@]}" ; do
+        mv ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.${x}.filtered.tagged.bam ${params.projectDir}${params.outputDir}.tmpFiltered/${params.projectName}.\${basefile}.${x}.filtered.tagged.bam
+    done
+    """
+    
