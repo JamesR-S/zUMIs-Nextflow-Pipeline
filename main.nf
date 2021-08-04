@@ -206,7 +206,9 @@ process barcode_detect {
 
 
     """
-    #!/usr/bin/env Rscript --no-environ
+    #!/usr/bin/env Rscript
+
+    .libPaths(c("/usr/local/lib/R/site-library","/usr/lib/R/site-library","/usr/lib/R/library"))
 
     library(methods)
     library(data.table)
@@ -292,24 +294,21 @@ process barcode_detect {
 
 }
 
-bc_binning_ch.ifEmpty('EMPTY')
+bc_binning_ch = bc_binning_ch.ifEmpty('EMPTY')
+kept_bc_binned_ch = kept_bc_binned_ch.ifEmpty('EMPTY')
 
-process BC_bin/bam_collate {
+process BC_bin_bam_collate {
 
     cpus = '32'
     mem = '40G'
-    time = '04:30:00'
+    time = '01:30:00'
 
     input:
     val BCbinning from bc_binning_ch
-    each file from tempfiles_ch1
+    each file from tempfiles_ch2
 
     output:
-    file "*.detected_cells.pdf" into detected_cells_ch
-    file "*_kept_barcodes.txt" into kept_barcodes_ch
-    file("*.BCbinning.txt") optional true into bc_binning_ch
-    file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch
-
+    env tmpFILT into collated_bam_ch
 
     """
     IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat ${file}))'
@@ -333,5 +332,204 @@ process BC_bin/bam_collate {
     for x in "\${temp_files[@]}" ; do
         mv ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.${x}.filtered.tagged.bam ${params.projectDir}${params.outputDir}.tmpFiltered/${params.projectName}.\${basefile}.${x}.filtered.tagged.bam
     done
+    tmpFILT="${params.projectDir}${params.outputDir}.tmpFiltered"
     """
+}
+
+collated_bam_ch = collated_bam_ch.first()
+
+process Mapping {
+
+    cpus = '32'
+    mem = '40G'
+    time = '04:30:00'
+
+    input:
+    val tmpFILT from collated_bam_ch
+    val barcodes from kept_barcodes_ch
+    val barcodes_binned from kept_bc_binned_ch
+    path index from genome_index_ch
+    val layout from read_layout_ch
+
+    output:
+
+
+    """
+    #!/usr/bin/env Rscript
+
+    .libPaths(c("/usr/local/lib/R/site-library","/usr/lib/R/site-library","/usr/lib/R/library"))
+
+    suppressMessages(require(data.table))
+    suppressMessages(require(R.utils))
+    options(datatable.fread.input.cmd.message=FALSE)
+    Sys.time()
+    inp <- commandArgs(trailingOnly = T, asValues=T)
+
+    samtools <- "samtools"
+    STAR_exec <- "STAR"
+
+    mem_limit = ${params.mem_limit}
+    out_dir = "${params.projectDir}${params.outputDir}"
+    project = "${params.projectName}"
+    STAR_index = "${index}"
+    num_threads = ${params.num_threads}
+    GTF_file = "${params.gtf}"
+    read_layout = "${layout}"
+    twoPass = ${params.two_pass}
+    additional_STAR_params = "${params.additional_STAR_params}"
+    if (identical(additional_STAR_params,"NONE")){
+    additional_STAR_params <- NULL
+    }
+    additional_fq = "${params.additional_fq}"
+    if(is.null(mem_limit)){
+    mem_limit <- 100
+    }else if(mem_limit == 0){
+    mem_limit <- 100
+    }
+
+    # collect filtered bam files ----------------------------------------------
+    tmpfolder <- "${tmpFilt}"
+    filtered_bams <- list.files(path = tmpfolder, pattern=paste(project,".*.filtered.tagged.bam$",sep=""),full.names=T)
+    #also merge the unmapped bam files:
+    sammerge_command <- paste(samtools,"cat -o",paste0(out_dir,project,".filtered.tagged.unmapped.bam"),paste0(filtered_bams,collapse=" "))
+
+
+    # check if multiple STAR instances can be run -----------------------------
+
+    genome_size <- system(command = paste("du -sh",STAR_index,"| cut -f1"), intern = TRUE)
+    genome_size <- as.numeric(gsub(pattern = "G",replacement = "", x = genome_size))
+    if(is.na(genome_size)){
+    genome_size <- 25 #set average genome size if there was a problem detecting
+    }
+    num_star_instances <- floor(mem_limit/genome_size)
+    if(num_star_instances < 1){
+    num_star_instances = 1 #set the number of STAR instances to 1 if it is 0
+    }
+    if(num_star_instances > num_threads){
+    num_star_instances = num_threads
+    } 
+
+    # GTF file setup ----------------------------------------------------------
+    #in case of additional sequences, we need to create a custom GTF
+
+    if ( !identical(additional_fq,"NONE") ) {
+    additional_fq = strsplit(additional_fq,",")
+    gtf_to_use <- GTF_file
+    param_additional_fa <- NULL
+    system(paste0("cp ",gtf_to_use," ",out_dir,project,".final_annot.gtf"))
+    }else{
+    for (i in additional_fq) {
+        system(paste(samtools,"faidx",i))
+        assign(paste("fai",i,sep="_"),data.table::fread(input = paste("cut -f1,2 ",i,".fai",sep=""),stringsAsFactors = F,data.table = F))
+    }
+
+    ref_df <- do.call("rbind", mget(ls(pattern = "fai_")))
+
+    user_gtf <- data.frame(
+        V1 = ref_df\$V1,
+        V2 = "User",
+        V3 = "exon",
+        V4 = 1,
+        V5 = ref_df\$V2,
+        V6 = ".",
+        V7 = "+",
+        V8 = ".",
+        V9 = paste('gene_id "',ref_df\$V1,'"; transcript_id "',ref_df\$V1,'"; exon_number "1"; gene_name "',ref_df\$V1,'"; gene_biotype "User"; transcript_name "',ref_df\$V1,'"; exon_id "',ref_df\$V1,'"',sep = ""),
+        stringsAsFactors = F
+    )
+
+    write.table(user_gtf,file = paste(out_dir,"additional_sequence_annot.gtf",sep = ""),sep = "\t",quote = F,row.names = F,col.names = F)
+
+    system(command = paste("cat ",GTF_file," ",paste(out_dir,"additional_sequence_annot.gtf",sep = "")," > ",out_dir,project,".final_annot.gtf",sep=""))
+
+    gtf_to_use <- paste(out_dir,project,".final_annot.gtf",sep="")
+    param_additional_fa <- paste("--genomeFastaFiles",paste(additional_fq,collapse = " "))
+    }
+
+    #GTF_file_final <- gtf_to_use
+    #yaml::write_yaml(inp,file = paste(out_dir,project,".postmap.yaml",sep=""))
+
+    # Detect read length ------------------------------------------------------
+    #check the first 100 reads to detect the read length of the cDNA read
+    #filtered_bam <- paste(out_dir,project,".filtered.tagged.bam",sep="")
+
+    cDNA_peek <- data.table::fread(cmd = paste(samtools,"view",filtered_bams[1],"| cut -f10 | head -n 1000"),stringsAsFactors = F,data.table = T, header = F)
+
+    getmode <- function(v) {
+    uniqv <- unique(v)
+    uniqv[which.max(tabulate(match(v, uniqv)))]
+    }
+
+    cDNA_read_length <- getmode(nchar(cDNA_peek\$V1))
+
+
+    # Setup STAR mapping ------------------------------------------------------
+    samtools_load_cores <- ifelse(num_threads>8,2,1)
+    avail_cores <- num_threads - samtools_load_cores #reserve threads for samtools file opening
     
+    avail_cores <- floor(avail_cores / num_star_instances)
+
+
+    if(avail_cores < 2){
+    avail_cores = 1
+    }
+
+
+    param_defaults <- paste("--readFilesCommand ",samtools," view -@",samtools_load_cores," --outSAMmultNmax 1 --outFilterMultimapNmax 50 --outSAMunmapped Within --outSAMtype BAM Unsorted --quantMode TranscriptomeSAM")
+    param_misc <- paste("--genomeDir",STAR_index,
+                        "--sjdbGTFfile",gtf_to_use,
+                        "--runThreadN",avail_cores,
+                        "--sjdbOverhang", cDNA_read_length-1,
+                        "--readFilesType SAM",read_layout)
+
+    STAR_command <- paste(STAR_exec,param_defaults,param_misc,additional_STAR_params,param_additional_fa)
+    if(twoPass==TRUE){
+    STAR_command <- paste(STAR_command,"--twopassMode Basic")
+    }
+
+    #finally, run STAR
+    if(num_star_instances>1){
+    map_tmp_dir <- paste0(out_dir,"zUMIs_output/.tmpMap/")
+    dir.create(path = map_tmp_dir,showWarnings = FALSE)
+    input_split <- split(filtered_bams, ceiling(seq_along(filtered_bams) / ceiling(length(filtered_bams) / num_star_instances)))
+    input_split <- sapply(input_split, paste0, collapse = ",")
+    STAR_preset <- STAR_command
+    STAR_command <- lapply(seq(num_star_instances), function(x){
+        paste(STAR_preset,
+        "--readFilesIn",input_split[x],
+        "--outFileNamePrefix",paste0(map_tmp_dir,"/tmp.",project,".",x,"."))
+    })
+    STAR_command <- paste(unlist(STAR_command), collapse = " & ")
+    system(paste(STAR_command,"&",sammerge_command,"& wait"))
+    
+    #after parallel instance STAR, collect output data in the usual file places
+    out_logs <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Log.final.out"), full = TRUE)
+    merge_logs <- paste("cat",paste(out_logs, collapse = " "),">",paste0(out_dir,project,".filtered.tagged.Log.final.out"))
+    out_bams <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Aligned.out.bam"), full = TRUE)
+    merge_bams <- paste(samtools,"cat -o",paste0(out_dir,project,".filtered.tagged.Aligned.out.bam"),paste(out_bams, collapse = " "))
+    out_txbams <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Aligned.toTranscriptome.out.bam"), full = TRUE)
+    merge_txbams <- paste(samtools,"cat -o",paste0(out_dir,project,".filtered.tagged.Aligned.toTranscriptome.out.bam"),paste(out_txbams, collapse = " "))
+    system(paste(merge_logs,"&",merge_bams,"&",merge_txbams,"& wait"))
+    system(paste0("rm -r ", map_tmp_dir, "tmp.", project, ".*"))
+    }else{
+    STAR_command <- paste(STAR_command,
+        "--readFilesIn",paste0(filtered_bams,collapse=","),
+        "--outFileNamePrefix",paste(out_dir,project,".filtered.tagged.",sep="")
+    )
+
+        system(paste(STAR_command,"&",sammerge_command,"& wait"))
+
+    }
+
+
+    #clean up chunked bam files
+    system(paste0("rm ",tmpfolder,"/",project,".*"))
+    q()
+
+
+
+    """
+
+
+}
+
