@@ -1,0 +1,4 @@
+/scratch/c.c1430759/scRNAseq-zUMIs/input/FASTQ/1k_PBMCs_TotalSeq_B_3p_gex_S6_L001_R1_001.fastq.gz
+/scratch/c.c1430759/scRNAseq-zUMIs/input/FASTQ/1k_PBMCs_TotalSeq_B_3p_gex_S6_L001_R2_001.fastq.gz
+/scratch/c.c1430759/scRNAseq-zUMIs/input/FASTQ/1k_PBMCs_TotalSeq_B_3p_gex_S6_L002_R1_001.fastq.gz
+/scratch/c.c1430759/scRNAseq-zUMIs/input/FASTQ/1k_PBMCs_TotalSeq_B_3p_gex_S6_L002_R2_001.fastq.gz

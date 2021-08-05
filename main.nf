@@ -120,6 +120,50 @@ process splitfq {
     """
 }
 
+process detect_read_pairs {
+
+    cpus = '4'
+    mem = '10G'
+    time = '00:10:00'
+
+    output:
+    file "*_pair.txt" into read_pairs_ch1
+    file "*_pair.txt" into read_pairs_ch2
+
+    """
+    #!/usr/bin/env Rscript
+
+    input <- read.csv("${params.input_csv}")
+    Basesubset <-subset(input,BC != "" | UMI != "")\$name
+    cDNAsubset <-subset(input,cDNA != "" )\$name
+
+    compare_reads <- function(x,n){}
+
+    compare_reads <- function(x,n){
+    line2 <- system(paste0("zcat -f < ", cDNAsubset[n]," | head -n 1"), intern = TRUE)
+    line2 <- as.list(strsplit(line2,split="\\\\s+")[[1]])
+    if (identical(line1[[1]],line2[[1]])){
+        read_pair <- c(x,cDNAsubset[n])
+        lapply(read_pair, write, paste0(basename(x),"_pair.txt"), append=TRUE, ncolumns=2)
+    }else{
+        n <-n+1
+        compare_reads(x,n)
+    }
+    }
+
+    for (x in Basesubset){
+    n <- 1
+    line1 <- system(paste0("zcat -f < ", x," | head -n 1"), intern = TRUE)
+    line1 <- as.list(strsplit(line1,split="\\\\s+")[[1]])
+    compare_reads(x,n)
+    }
+
+    """
+
+
+
+}
+
 process fqFilter {
 
     cpus = '32'
@@ -127,28 +171,34 @@ process fqFilter {
     time = '00:30:00'
 
     input:
-    each file from tempfiles_ch1
+    val tfiles from tempfiles_ch2.collect()
+    each file from read_pairs_ch2
 
     output:
     file "*.bamlist.txt" into bamlists_ch
-    env read_layout into read_layout_ch
+    env read_layout into read_layout_ch1
+    env read_layout into read_layout_ch2
     file "*.BCstats.txt" into bcstats_ch
 
 
     """
 
-    IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat ${file}))'
-
     filename=\$(basename ${file})
 
-    parentfq=\${filename%"_tempfiles.txt"}
+    parentfq=\${filename%"_pair.txt"}
 
     basefile=\$(echo \${parentfq} | cut -f 1 -d '.')
+
+    tmpfiles=(${tfiles.join(" ")})
+
+    tlookup=\$(printf -- '%s\n' "\${tmpfiles[@]}" | grep \$basefile)
+
+    IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat \${tlookup}))'
 
     for x in "\${temp_files[@]}" 
     do 
         perl ${params.projectDir}${params.binDir}fqfilter_v2.pl ${params.input_csv} samtools Rscript pigz ${params.projectDir}${params.binDir} \${x} ${params.UMI_phred} \\
-        ${params.projectName} ${params.num_threads} \${parentfq} \${basefile} ${params.BC_num_bases} ${params.BC_phred} ${params.UMI_num_bases} ${params.projectDir}${params.outputDir}
+        ${params.projectName} ${params.num_threads} \${parentfq} \${basefile} ${params.BC_num_bases} ${params.BC_phred} ${params.UMI_num_bases} ${params.projectDir}${params.outputDir} ${file}
     done
     wait
     ls ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.*.filtered.tagged.bam > \${basefile}_${params.projectName}.bamlist.txt
@@ -305,19 +355,26 @@ process BC_bin_bam_collate {
 
     input:
     val BCbinning from bc_binning_ch
-    each file from tempfiles_ch2
+    val tfiles from tempfiles_ch1.collect()
+    each file from read_pairs_ch1
+
 
     output:
     env tmpFILT into collated_bam_ch
 
     """
-    IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat ${file}))'
-
     filename=\$(basename ${file})
 
-    parentfq=\${filename%"_tempfiles.txt"}
+    parentfq=\${filename%"_pair.txt"}
 
     basefile=\$(echo \${parentfq} | cut -f 1 -d '.')
+
+    tmpfiles=(${tfiles.join(" ")})
+
+    tlookup=\$(printf -- '%s\n' "\${tmpfiles[@]}" | grep \$basefile)
+
+    IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'temp_files=(\$(cat \${tlookup}))'
+
 
     [ -d ${params.projectDir}${params.outputDir}.tmpFiltered ] || mkdir ${params.projectDir}${params.outputDir}.tmpFiltered
 
@@ -346,10 +403,8 @@ process Mapping {
 
     input:
     val tmpFILT from collated_bam_ch.last()
-    val barcodes from kept_barcodes_ch
-    val barcodes_binned from kept_bc_binned_ch
     path index from genome_index_ch
-    val layout from read_layout_ch.last()
+    val layout from read_layout_ch1.last()
 
     output:
     file "*.filtered.tagged.Log.final.out" into mapping_log_ch
@@ -371,23 +426,23 @@ process Mapping {
     samtools <- "samtools"
     STAR_exec <- "STAR"
 
-    mem_limit = ${params.mem_limit}
-    out_dir = "${params.projectDir}${params.outputDir}"
-    project = "${params.projectName}"
-    STAR_index = "${index}"
-    num_threads = ${params.num_threads}
-    GTF_file = "${params.gtf}"
-    read_layout = "${layout}"
-    twoPass = ${params.two_pass}
-    additional_STAR_params = "${params.additional_STAR_params}"
+    mem_limit <- ${params.mem_limit}
+    out_dir <- "${params.projectDir}${params.outputDir}"
+    project <- "${params.projectName}"
+    STAR_index <- "${index}"
+    num_threads <- ${params.num_threads}
+    GTF_file <- "${params.gtf}"
+    read_layout <- "${layout}"
+    twoPass <- ${params.two_pass}
+    additional_STAR_params <- "${params.additional_STAR_params}"
     if (identical(additional_STAR_params,"NONE")){
     additional_STAR_params <- NULL
     }
-    additional_fq = "${params.additional_fq}"
+    additional_fq <- "${params.additional_fq}"
     if (identical(additional_fq,"NONE")){
     additional_fq <- NULL
     }else{
-        additional_fq = strsplit(additional_fq,",")
+        additional_fq <- strsplit(additional_fq,",")
     }
     if(is.null(mem_limit)){
     mem_limit <- 100
@@ -535,3 +590,347 @@ process Mapping {
 }
 
 
+process Counting {
+
+    cpus = '32'
+    mem = '40G'
+    time = '04:30:00'
+    
+    input:
+    val barcodes from kept_barcodes_ch
+    val keptBC from kept_bc_binned_ch
+    val readLO from read_layout_ch2.last()
+    file alignedBAM from aligned_bam_ch
+
+    output:
+    file "*.filtered.Aligned.GeneTagged.UBcorrected.sorted.bam" into UB_corrected_bam_ch
+    file "*.filtered.Aligned.GeneTagged.bam" into genetagged_bam_ch
+    file "*.filtered.Aligned.GeneTagged.sorted.bam" into sorted_bam_ch
+    file "*.intronProbability.rds" into intronProbability_ch
+    file "*.dgecounts.rds" into dgecounts_ch
+
+    """
+    #!/usr/bin/env Rscript
+    library(methods)
+    library(data.table)
+    library(yaml)
+    library(ggplot2)
+    suppressMessages(require(R.utils))
+    suppressPackageStartupMessages(library(Rsamtools))
+
+    opt <- NULL
+    opt\$zUMIs_directory <- "${params.projectDir}${params.binDir}"
+    opt\$counting_opts\$Ham_Dist <- ${params.ham_dist}
+    opt\$barcodes\$BarcodeBinning <- ${params.barcode_binning}
+    opt\$reference\$exon_extension <- ${params.exon_extension}
+    opt\$reference\$extension_length <- ${params.extension_length}
+    opt\$reference\$scaffold_length_min <- ${params.scaffold_length_min}
+    opt\$counting_opts\$multi_overlap <- ${params.multi_overlap}
+    opt\$counting_opts\$strand <- ${params.strand}
+    opt\$counting_opts\$primaryHit <- ${params.primary_hit}
+    opt\$counting_opts\$introns <- ${params.include_introns}
+    opt\$counting_opts\$intronProb <- ${params.intron_probability}
+    opt\$counting_opts\$downsampling <- ${params.downsampling}
+    opt\$barcodes\$demultiplex <- ${params.demultiplex}
+    opt\$out_dir <- "${params.projectDir}${params.outputDir}"
+    opt\$project <- "${params.projectName}"
+    opt\$num_threads <- "${params.num_threads}"
+    opt\$mem_limit <- ${params.mem_limit}
+    opt\$read_layout <- "${readLO}"
+
+
+    input <- read.csv("${params.input_csv}")
+
+    sequence_files <- as.list(NULL)
+    for (i in 1:nrow(input)){
+        name <- input\$name[i]
+        base_definition <- c(if (is.na(input\$cDNA[i])) NULL else paste0("cDNA(",input\$cDNA[i],")"),if (is.na(input\$BC[i])) NULL else paste0("BC(",input\$BC[i],")"),if (is.na(input\$UMI[i])) NULL else paste0("UMI(",input\$UMI[i],")"))
+        complete<- NULL
+        complete\$name <- name
+        complete\$base_definition <- base_definition
+        complete\$filter_cutoffs <- input\$filter_cutoffs[i]
+        complete\$correct_frameshift <- input\$correct_frameshift[i]
+        sequence_files[[paste0("file",i)]] <- complete
+    }
+
+
+    source(paste0(opt\$zUMIs_directory,"/runfeatureCountFUN.R"))
+    source(paste0(opt\$zUMIs_directory,"/misc/featureCounts.R"))
+    source(paste0(opt\$zUMIs_directory,"/UMIstuffFUN.R"))
+    source(paste0(opt\$zUMIs_directory,"/barcodeIDFUN.R"))
+    options(datatable.fread.input.cmd.message=FALSE)
+    print(Sys.time())
+
+    samtoolsexc <- "samtools"
+    data.table::setDTthreads(threads=1)
+
+    #Check the version of Rsubread
+    #checkRsubreadVersion()
+    fcounts_clib <- paste0(opt\$zUMIs_directory,"/misc/fcountsLib2")
+
+    opt <- fixMissingOptions(opt)
+    #######################################################################
+    ########################## double check for non-UMI method
+    UMIcheck <- check_nonUMIcollapse(sequence_files)
+    if(UMIcheck == "nonUMI"){
+    opt\$counting_opts\$Ham_Dist <- 0
+    }
+    #is the data Smart-seq3?
+    smart3_flag <- ifelse(any(grepl(pattern = "ATTGCGCAATG",x = unlist(sequence_files))), TRUE, FALSE)
+
+    #######################################################################
+    ##### Barcode handling & chunking
+
+    #read file with barcodecounts
+
+    #check if binning of adjacent barcodes should be run
+    if(opt\$barcodes\$BarcodeBinning > 0){
+    bccount <- fread("${keptBC}")
+    }else{
+    bccount <- fread("${barcodes}")
+    }
+    bccount<-splitRG(bccount=bccount, mem= opt\$mem_limit, hamdist = opt\$counting_opts\$Ham_Dist)
+
+    ##############################################################
+    ##### featureCounts
+
+    abamfile<-"${alignedBAM}"
+    outbamfile <-paste0(opt\$project,".filtered.Aligned.GeneTagged.bam")
+
+    ## gene annotation
+    saf<-.makeSAF(gtf = paste0(opt\$out_dir,"/",opt\$project,".final_annot.gtf"),
+                extension_var = opt\$reference\$exon_extension,
+                exon_extension = opt\$reference\$extension_length,
+                buffer_length = (opt\$reference\$extension_length / 2),
+                scaff_length = opt\$reference\$scaffold_length_min,
+                multi_overlap_var = opt\$multi_overlap,
+                samtoolsexc = samtoolsexc)
+    try(gene_name_mapping <- .get_gene_names(gtf = paste0(opt\$out_dir,"/",opt\$project,".final_annot.gtf"), threads = opt\$num_threads), silent = TRUE)
+    try(data.table::fwrite(gene_name_mapping, file = paste0(opt\$out_dir,"/zUMIs_output/expression/",opt\$project,".gene_names.txt"), sep ="\t", quote = FALSE), silent = TRUE)
+    ##
+
+    if(smart3_flag & opt\$counting_opts\$strand == 1){
+    #split bam in UMU ends and internal
+    print("Preparing Smart-seq3 data for stranded gene assignment...")
+    print(Sys.time())
+    tmp_bams <- split_bam(bam = abamfile, cpu = opt\$num_threads, samtoolsexc=samtoolsexc)
+
+    #assign features with appropriate strand
+    fnex_int<-.runFeatureCount(tmp_bams[1], saf=saf\$exons, strand=0, type="ex", primaryOnly = opt\$counting_opts\$primaryHit, cpu = opt\$num_threads, mem = opt\$mem_limit, fcounts_clib = fcounts_clib, multi_overlap_var = opt\$counting_opts\$multi_overlap)
+    fnex_umi<-.runFeatureCount(tmp_bams[2], saf=saf\$exons, strand=1, type="ex", primaryOnly = opt\$counting_opts\$primaryHit, cpu = opt\$num_threads, mem = opt\$mem_limit, fcounts_clib = fcounts_clib, multi_overlap_var = opt\$counting_opts\$multi_overlap)
+    ffiles_int <- paste0(fnex_int,".tmp")
+    ffiles_umi <- paste0(fnex_umi,".tmp")
+
+    if(opt\$counting_opts\$introns){
+        fnin_int<-.runFeatureCount(ffiles_int, saf=saf\$introns, strand=0, type="in", primaryOnly = opt\$counting_opts\$primaryHit, cpu = opt\$num_threads, mem = opt\$mem_limit, fcounts_clib = fcounts_clib, multi_overlap_var = opt\$counting_opts\$multi_overlap)
+        fnin_umi<-.runFeatureCount(ffiles_umi, saf=saf\$introns, strand=1, type="in", primaryOnly = opt\$counting_opts\$primaryHit, cpu = opt\$num_threads, mem = opt\$mem_limit, fcounts_clib = fcounts_clib, multi_overlap_var = opt\$counting_opts\$multi_overlap)
+        ffiles_int <- paste0(fnin_int,".tmp")
+        ffiles_umi <- paste0(fnin_umi,".tmp")
+    }
+    join_bam_cmd <- paste(samtoolsexc, "cat -o", outbamfile, ffiles_int, ffiles_umi)
+    system(join_bam_cmd)
+    system(paste0("rm ",tmp_bams[1],"* ",tmp_bams[2],"*"))
+    }else{
+    fnex<-.runFeatureCount(abamfile,
+                            saf=saf\$exons,
+                            strand=opt\$counting_opts\$strand,
+                            type="ex",
+                            primaryOnly = opt\$counting_opts\$primaryHit,
+                            cpu = opt\$num_threads,
+                            mem = opt\$mem_limit,
+                            fcounts_clib = fcounts_clib,
+                            multi_overlap_var = opt\$counting_opts\$multi_overlap)
+    ffiles<-paste0(fnex,".tmp")
+
+    if(opt\$counting_opts\$introns){
+        fnin  <-.runFeatureCount(ffiles,
+                                saf=saf\$introns,
+                                strand=opt\$counting_opts\$strand,
+                                type="in",
+                                primaryOnly = opt\$counting_opts\$primaryHit,
+                                cpu = opt\$num_threads,
+                                mem = opt\$mem_limit,
+                                fcounts_clib = fcounts_clib,
+                                multi_overlap_var = opt\$counting_opts\$multi_overlap)
+        system(paste0("rm ",fnex,".tmp"))
+        ffiles<-paste0(fnin,".tmp")
+    }
+
+    system(paste("mv",ffiles,outbamfile))
+    }
+
+    if(is.null(opt\$mem_limit)){
+    mempercpu <- max(round(100/opt\$num_threads,0),1)
+    }else{
+    mempercpu <- max(round(opt\$mem_limit/opt\$num_threads,0),1)
+    }
+
+
+    if(opt\$counting_opts\$Ham_Dist == 0){
+    sortbamfile <-paste0(opt\$project,".filtered.Aligned.GeneTagged.sorted.bam")
+    print(Sys.time())
+    print("Coordinate sorting final bam file...")
+    sort_cmd <- paste0(samtoolsexc," sort -O 'BAM' -@ ",opt\$num_threads," -m ",mempercpu,"G -o ",sortbamfile," ",outbamfile)
+    system(sort_cmd)
+    system(paste0("rm ",outbamfile))
+    }else{
+    #run hamming distance collapsing here and write output into bam file
+    if(!dir.exists( paste0(opt\$out_dir,"/zUMIs_output/molecule_mapping/") )){
+        dir.create( paste0(opt\$out_dir,"/zUMIs_output/molecule_mapping/") )
+    }
+
+    tmpbamfile <- outbamfile
+    outbamfile <- paste0(opt\$project,".filtered.Aligned.GeneTagged.sorted.bam")
+    print(Sys.time())
+    print("Coordinate sorting intermediate bam file...")
+    sort_cmd <- paste0(samtoolsexc," sort -O 'BAM' -@ ",opt\$num_threads," -m ",mempercpu,"G -o ",outbamfile," ",tmpbamfile)
+    system(sort_cmd)
+    index_cmd <- paste(samtoolsexc,"index -@",opt\$num_threads,outbamfile)
+    system(index_cmd)
+    system(paste0("rm ",tmpbamfile))
+    print(Sys.time())
+    
+    #check if PE / SE flag is set correctly
+    if(is.null(opt\$read_layout)){
+        opt\$read_layout <- check_read_layout(outbamfile)
+    }
+    
+    for(i in unique(bccount\$chunkID)){
+        print( paste( "Hamming distance collapse in barcode chunk", i, "out of",length(unique(bccount\$chunkID)) ))
+        reads <- reads2genes_new(featfile = outbamfile,
+                                bccount  = bccount,
+                                inex     = opt\$counting_opts\$introns,
+                                chunk    = i,
+                                cores    = opt\$num_threads)
+        reads <- reads[!UB==""] #make sure only UMI-containing reads go further
+        u <- umiCollapseHam(reads,bccount, HamDist=opt\$counting_opts\$Ham_Dist)
+    }
+    #print("Demultiplexing output bam file by cell barcode...")
+    #demultiplex_bam(opt, outbamfile, nBCs = length(unique(bccount\$XC)), bccount = bccount, samtoolsexc = samtoolsexc)
+    print("Correcting UMI barcode tags...")
+    sortbamfile <- correct_UB_tags_new(outbamfile, opt\$project)
+    file.remove(outbamfile)
+    #sortbamfile <- correct_UB_tags(bccount, samtoolsexc)
+    #sortbamfile <-paste0(opt\$project,".filtered.Aligned.GeneTagged.UBcorrected.sorted.bam")
+    bccount<-splitRG(bccount=bccount, mem= opt\$mem_limit, hamdist = 0) # allow more reads to be in RAM fur subsequent steps
+    }
+    index_cmd <- paste(samtoolsexc,"index -@",opt\$num_threads,sortbamfile)
+    system(index_cmd)
+    print(Sys.time())
+
+    #check if PE / SE flag is set correctly
+    if(is.null(opt\$read_layout)){
+    opt\$read_layout <- check_read_layout(sortbamfile)
+    }
+
+    ##########################################
+    #set Downsampling ranges
+
+    data.table::setDTthreads(threads=opt\$num_threads)
+
+    subS<-setDownSamplingOption( opt\$counting_opts\$downsampling,
+                                bccount= bccount,
+                                filename=paste(opt\$out_dir,"/zUMIs_output/stats/",opt\$project,
+                                                ".downsampling_thresholds.pdf",sep=""))
+    print("Here are the detected subsampling options:")
+    if(is.null(row.names(subS))){
+    print("Automatic downsampling")
+    }else{
+    print(row.names(subS))
+    }
+    if( opt\$counting_opts\$introns ){
+    mapList<-list("exon"="exon",
+                    "inex"=c("intron","exon"),
+                    "intron"="intron")
+    }else{
+    mapList<-list("exon"="exon")
+    }
+
+
+    ########################## assign reads to UB & GENE
+
+    for(i in unique(bccount\$chunkID)){
+        print( paste( "Working on barcode chunk", i, "out of",length(unique(bccount\$chunkID)) ))
+        print( paste( "Processing",length(bccount[chunkID==i]\$XC), "barcodes in this chunk..." ))
+        reads <- reads2genes_new(featfile = sortbamfile,
+                                bccount  = bccount,
+                                inex     = opt\$counting_opts\$introns,
+                                chunk    = i,
+                                cores    = opt\$num_threads)
+
+        tmp<-collectCounts(  reads =reads,
+                            bccount=bccount[chunkID==i],
+                            subsample.splits=subS[which(max(bccount[chunkID==i]\$n) >= subS[,1]), , drop = FALSE],
+                            mapList=mapList
+                            )
+
+        if(i==1){
+        allC<-tmp
+        }else{
+        allC<-bindList(alldt=allC,newdt=tmp)
+        }
+    }
+
+    if( UMIcheck == "UMI"  ){
+    if(smart3_flag){
+        final<-list( umicount  = convert2countM(alldt=allC,what="umicount"),
+                    readcount = convert2countM(allC,"readcount"),
+                    readcount_internal = convert2countM(allC,"readcount_internal"))
+    }else{
+        final<-list( umicount  = convert2countM(alldt=allC,what="umicount"),
+                    readcount = convert2countM(allC,"readcount"))
+    }
+    }else{
+    final<-list(readcount = convert2countM(allC,"readcount"))
+    }
+
+    #Make RPKM if necessary
+    if(UMIcheck == "nonUMI" | smart3_flag == TRUE ){
+    tx_len <- .get_tx_lengths( paste0(opt\$out_dir,"/",opt\$project,".final_annot.gtf") )
+    rpkms <- if(smart3_flag){
+        RPKM.calc(final\$readcount_internal\$exon\$all, tx_len)
+    }else{
+        RPKM.calc(final\$readcount\$exon\$all, tx_len)
+    }
+
+    final\$rpkm <- list(exon = list(all = rpkms))
+    }
+
+    saveRDS(final,file=paste(opt\$project,".dgecounts.rds",sep=""))
+
+    ################# #Accessory processing scripts
+    #Intron Probability Score Calculation
+    if(\ == TRUE){
+    if(opt\$counting_opts\$introns == FALSE){
+        print("Intron information is needed to calculate Intron-Probability! Please change yaml settings counting_opts->introns to yes.\n Skipping probability calculation...")
+    }else{
+        library(extraDistr)
+        print("Starting Intron-Probability Calculations...")
+
+        # Extractingreads from sam files again, this could be sped up by integrating code further upstream of zUMIs-dge2
+        genesWithIntronProb<-.intronProbability(bccount=bccount,
+                                                featfile=sortbamfile,
+                                                inex=opt\$counting_opts\$introns,
+                                                cores=opt\$num_threads,
+                                                samtoolsexc=samtoolsexc,
+                                                allC=allC,
+                                                saf=saf)
+        saveRDS(genesWithIntronProb, file = paste0(opt\$project,".intronProbability.rds"))
+    }
+    }
+
+    #demultiplexing
+    if(opt\$barcodes\$demultiplex){
+    print("Demultiplexing output bam file by cell barcode...")
+    demultiplex_bam(opt, sortbamfile, nBCs = length(unique(bccount\$XC)), bccount = bccount, samtoolsexc = samtoolsexc, BCkeepfile= "${barcodes}")
+    }
+
+    #################
+
+    print(Sys.time())
+    print(paste("I am done!! Look what I produced...",opt\$out_dir,"/zUMIs_output/",sep=""))
+    print(gc())
+    q()
+
+    """
+}

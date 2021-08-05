@@ -348,7 +348,7 @@ write_molecule_mapping <- function(mm){
 
 correct_UB_tags_new <- function(inbamfile,n){
   mm_path <- paste0(opt$out_dir,"/zUMIs_output/molecule_mapping/",n,".")
-  outbamfile <-paste0(opt$out_dir,"/",opt$project,".filtered.Aligned.GeneTagged.UBcorrected.sorted.bam")
+  outbamfile <-paste0(opt$project,".filtered.Aligned.GeneTagged.UBcorrected.sorted.bam")
   bcpath <- paste0(opt$out_dir,"/zUMIs_output/",opt$project,"kept_barcodes.txt")
   use_threads <- opt$num_threads
   pypath <- paste0(opt$zUMIs_directory,"/correct_UBtag.py")
@@ -389,7 +389,7 @@ correct_UB_tags <- function(bccount, samtoolsexc){
   return(outbam)
 }
 
-demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount){
+demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount, BCkeepfile){
   if(!dir.exists( paste0(opt$out_dir,"/zUMIs_output/demultiplexed/") )){
     dir.create( paste0(opt$out_dir,"/zUMIs_output/demultiplexed/") )
   }
@@ -412,7 +412,7 @@ demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount){
       if(nchunks == 1){nchunks = 2}
       print(paste("Breaking up demultiplexing in",nchunks,"chunks. This may be because you have >10000 cells or a too low filehandle limit (ulimit -n)."))
 
-      full_bclist <- paste0(opt$out_dir,"/zUMIs_output/",opt$project,"kept_barcodes.txt")
+      full_bclist <- BCkeepfile
       bcsplit_prefix <- paste0(opt$out_dir,"/zUMIs_output/.",opt$project,"kept_barcodes.")
 
       split_cmd <- paste0("split -a 3 -n l/",nchunks," ",full_bclist, " ", bcsplit_prefix)

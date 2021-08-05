@@ -5,7 +5,10 @@ suppressMessages(require(R.utils))
 opt<-commandArgs(trailingOnly = T,asValues=T)
 
 input<-read.csv(opt$input)
-input <- input[grep(opt$parentfq,input$name),]
+
+fq_pair <- as.list(readLines(file(opt$pairs_file)))
+
+input <- input[grep((paste(fq_pair,collapse="|")),input$name),]
 
 sequence_files <- as.list(NULL)
 for (i in 1:nrow(input)){

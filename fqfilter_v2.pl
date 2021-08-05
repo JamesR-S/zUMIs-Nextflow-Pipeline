@@ -21,6 +21,7 @@ $BCfilt1=$ARGV[11];
 $BCfilt2=$ARGV[12];
 $UMIfilt1=$ARGV[13];
 $outdir=$ARGV[14];
+$pairsfile=$ARGV[15];
 }
 use lib "$zumisdir";
 use distilReads;
@@ -29,7 +30,7 @@ use Approx;
 #test arguments with echo
 
 $zumisversion = "nf";
-open(YL,"$rscriptexc --no-environ $zumisdir/readYaml4fqfilter.R --args --input=$input --project=$project --num_threads=$num_threads --parentfq=$parentfq --BCfbases=$BCfilt1 --BCfphred=$BCfilt2 --UMIfbases=$UMIfilt1 --UMIfphred=$UMIfilt2 |");
+open(YL,"$rscriptexc --no-environ $zumisdir/readYaml4fqfilter.R --args --input=$input --project=$project --num_threads=$num_threads --parentfq=$parentfq --BCfbases=$BCfilt1 --BCfphred=$BCfilt2 --UMIfbases=$UMIfilt1 --UMIfphred=$UMIfilt2 --pairs_file=$pairsfile |");
 @arg=<YL>;
 close YL;
 %argHash;
@@ -86,14 +87,14 @@ for($i=0;$i<=$#keys;$i++){
     chomp($oriBase);
 
 		#change the file name to temporary prefix for its chunk
-		$chunk = "$outdir.${tmpDir}_tmpMerge/${oriBase}${tmpPrefix}";
+		$chunk = "$outdir.${oriBase}_tmpMerge/${oriBase}${tmpPrefix}";
     open $fh, '-|', $pigz, '-dc', $chunk || die "Couldn't open file ".$chunk.". Check permissions!\n Check if it is differently zipped then .gz\n\n";
   }else {
 
 		$oriF = $fp[0];
 		$oriBase = `basename $oriF | cut -f 1 -d '.'`;
 		#change the file name to temporary prefix for its chunk
-		$chunk = "$outdir/.${tmpDir}_tmpMerge/${oriBase}${tmpPrefix}";
+		$chunk = "$outdir/.${oriBase}_tmpMerge/${oriBase}${tmpPrefix}";
 
     open $fh, "<", $chunk || die "Couldn't open file ".$chunk.". Check permissions!\n Check if it is differently zipped then .gz\n\n";
   }
