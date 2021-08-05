@@ -319,24 +319,24 @@ process BC_bin_bam_collate {
 
     basefile=\$(echo \${parentfq} | cut -f 1 -d '.')
 
+    [ -d ${params.projectDir}${params.outputDir}.tmpFiltered ] || mkdir ${params.projectDir}${params.outputDir}.tmpFiltered
+
     if [[ -f "${BCbinning}" ]] ; then
         for x in "\${temp_files[@]}" ; do
-            rawbam="${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.${x}.raw.tagged.bam"
-            fixedbam="${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.${x}.filtered.tagged.bam"
-            mv ${fixedbam} ${rawbam}
+            rawbam="${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.\${x}.raw.tagged.bam"
+            fixedbam="${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.\${x}.filtered.tagged.bam"
+            mv \${fixedbam} \${rawbam}
             perl ${params.projectDir}${params.binDir}correct_BCtag.pl \${rawbam} \${fixedbam} ${BCbinning} samtools &
         done
         wait
     fi
 
     for x in "\${temp_files[@]}" ; do
-        mv ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.${x}.filtered.tagged.bam ${params.projectDir}${params.outputDir}.tmpFiltered/${params.projectName}.\${basefile}.${x}.filtered.tagged.bam
+        mv ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.\${x}.filtered.tagged.bam ${params.projectDir}${params.outputDir}.tmpFiltered/${params.projectName}.\${basefile}.\${x}.filtered.tagged.bam
     done
     tmpFILT="${params.projectDir}${params.outputDir}.tmpFiltered"
     """
 }
-
-collated_bam_ch = collated_bam_ch.first()
 
 process Mapping {
 
@@ -345,13 +345,16 @@ process Mapping {
     time = '04:30:00'
 
     input:
-    val tmpFILT from collated_bam_ch
+    val tmpFILT from collated_bam_ch.last()
     val barcodes from kept_barcodes_ch
     val barcodes_binned from kept_bc_binned_ch
     path index from genome_index_ch
-    val layout from read_layout_ch
+    val layout from read_layout_ch.last()
 
     output:
+    file "*.filtered.tagged.Log.final.out" into mapping_log_ch
+    file "*.filtered.tagged.Aligned.out.bam" into aligned_bam_ch
+    file "*.filtered.tagged.Aligned.toTranscriptome.out.bam" into txbam_ch
 
 
     """
@@ -381,6 +384,11 @@ process Mapping {
     additional_STAR_params <- NULL
     }
     additional_fq = "${params.additional_fq}"
+    if (identical(additional_fq,"NONE")){
+    additional_fq <- NULL
+    }else{
+        additional_fq = strsplit(additional_fq,",")
+    }
     if(is.null(mem_limit)){
     mem_limit <- 100
     }else if(mem_limit == 0){
@@ -388,10 +396,11 @@ process Mapping {
     }
 
     # collect filtered bam files ----------------------------------------------
-    tmpfolder <- "${tmpFilt}"
-    filtered_bams <- list.files(path = tmpfolder, pattern=paste(project,".*.filtered.tagged.bam$",sep=""),full.names=T)
+    tmpfolder <- "${tmpFILT}"
+    filtered_bams <- list.files(path = tmpfolder, pattern=paste(project,".*.filtered.tagged.bam",sep=""),full.names=T)
     #also merge the unmapped bam files:
     sammerge_command <- paste(samtools,"cat -o",paste0(out_dir,project,".filtered.tagged.unmapped.bam"),paste0(filtered_bams,collapse=" "))
+    system(sammerge_command)
 
 
     # check if multiple STAR instances can be run -----------------------------
@@ -412,8 +421,7 @@ process Mapping {
     # GTF file setup ----------------------------------------------------------
     #in case of additional sequences, we need to create a custom GTF
 
-    if ( !identical(additional_fq,"NONE") ) {
-    additional_fq = strsplit(additional_fq,",")
+    if ( is.null(additional_fq[1]) | length(additional_fq)==0) {
     gtf_to_use <- GTF_file
     param_additional_fa <- NULL
     system(paste0("cp ",gtf_to_use," ",out_dir,project,".final_annot.gtf"))
@@ -451,9 +459,9 @@ process Mapping {
 
     # Detect read length ------------------------------------------------------
     #check the first 100 reads to detect the read length of the cDNA read
-    #filtered_bam <- paste(out_dir,project,".filtered.tagged.bam",sep="")
+    filtered_bam <- paste(out_dir,project,".filtered.tagged.unmapped.bam",sep="")
 
-    cDNA_peek <- data.table::fread(cmd = paste(samtools,"view",filtered_bams[1],"| cut -f10 | head -n 1000"),stringsAsFactors = F,data.table = T, header = F)
+    cDNA_peek <- data.table::fread(cmd = paste(samtools,"view",filtered_bam,"| cut -f10 | uniq | head -n 1000"),stringsAsFactors = F,data.table = T, header = F)
 
     getmode <- function(v) {
     uniqv <- unique(v)
@@ -500,36 +508,30 @@ process Mapping {
         "--outFileNamePrefix",paste0(map_tmp_dir,"/tmp.",project,".",x,"."))
     })
     STAR_command <- paste(unlist(STAR_command), collapse = " & ")
-    system(paste(STAR_command,"&",sammerge_command,"& wait"))
+    system(paste(STAR_command,"& wait"))
     
     #after parallel instance STAR, collect output data in the usual file places
     out_logs <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Log.final.out"), full = TRUE)
-    merge_logs <- paste("cat",paste(out_logs, collapse = " "),">",paste0(out_dir,project,".filtered.tagged.Log.final.out"))
+    merge_logs <- paste("cat",paste(out_logs, collapse = " "),">",paste0(project,".filtered.tagged.Log.final.out"))
     out_bams <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Aligned.out.bam"), full = TRUE)
-    merge_bams <- paste(samtools,"cat -o",paste0(out_dir,project,".filtered.tagged.Aligned.out.bam"),paste(out_bams, collapse = " "))
+    merge_bams <- paste(samtools,"cat -o",paste0(project,".filtered.tagged.Aligned.out.bam"),paste(out_bams, collapse = " "))
     out_txbams <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Aligned.toTranscriptome.out.bam"), full = TRUE)
-    merge_txbams <- paste(samtools,"cat -o",paste0(out_dir,project,".filtered.tagged.Aligned.toTranscriptome.out.bam"),paste(out_txbams, collapse = " "))
+    merge_txbams <- paste(samtools,"cat -o",paste0(project,".filtered.tagged.Aligned.toTranscriptome.out.bam"),paste(out_txbams, collapse = " "))
     system(paste(merge_logs,"&",merge_bams,"&",merge_txbams,"& wait"))
     system(paste0("rm -r ", map_tmp_dir, "tmp.", project, ".*"))
     }else{
     STAR_command <- paste(STAR_command,
         "--readFilesIn",paste0(filtered_bams,collapse=","),
-        "--outFileNamePrefix",paste(out_dir,project,".filtered.tagged.",sep="")
+        "--outFileNamePrefix",paste(project,".filtered.tagged.",sep="")
     )
 
-        system(paste(STAR_command,"&",sammerge_command,"& wait"))
+        system(paste(STAR_command,"& wait"))
 
     }
-
-
-    #clean up chunked bam files
-    system(paste0("rm ",tmpfolder,"/",project,".*"))
-    q()
-
-
 
     """
 
 
 }
+
 
