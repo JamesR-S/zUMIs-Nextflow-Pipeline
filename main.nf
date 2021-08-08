@@ -8,7 +8,8 @@ process copyResourceFiles {
 
     output:
       file "${params.fastaName}" into fasta_ch
-      file "${params.gtfName}" into gtf_ch
+      file "${params.gtfName}" into gtf_ch1
+      file "${params.gtfName}" into gtf_ch2
 
     """
     cp ${params.genome} .
@@ -28,7 +29,7 @@ process generateIndex {
 
     input:
         val fasta from fasta_ch
-        val gtf from gtf_ch
+        val gtf from gtf_ch1
 
     output:
         path "${params.genomeName}" into genome_index_ch
@@ -51,74 +52,6 @@ process generateIndex {
     """
 }
 
-process readFastqFiles {
-
-    cpus = '4'
-    mem = '20G'
-    time = '00:05:00'
-
-    output:
-        file '*' into fastqs_ch
-
-    """
-
-    nrow=\$(wc -l ${params.input_csv} | cut -d' ' -f1)
-    length=`expr \$nrow + 1`
-    for i in \$( seq 2 \$length )
-    do
-      awk -v rownum="\${i}" -F "\\"*,\\"*" 'FNR==rownum {print \$1}' ${params.input_csv} | xargs -I{} cp {} .
-    done
-
-    """
-}
-
-process splitfq {
-
-    cpus = '32'
-    mem = '20G'
-    time = '00:15:00'
-
-    input:
-    each file from fastqs_ch
-
-    output:
-    file '*_tempfiles.txt' into tempfiles_ch1
-    file '*_tempfiles.txt' into tempfiles_ch2
-
-
-    """
-
-    fullsize=\$(stat -L --printf="%s" ${file})
-
-    basefile=\$(basename ${file} | cut -f 1 -d '.')
-
-    if [ ! -d "${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge" ]; then
-        mkdir ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge
-    fi
-
-    if [[ ${file} =~ \\.gz\$ ]]; then
-      pigz -dc ${file} | head -n 4000000 | pigz > ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq.gz
-      smallsize=\$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq.gz)
-      rm ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq.gz
-      nreads=\$(expr \${fullsize} \\* 1000000 / \${smallsize})
-      n=`expr \$nreads / ${params.num_threads}`
-      n=`expr \$n + 1`
-      nl=`expr \$n \\* 4`
-      pigz -dc -p ${params.num_threads} ${file} | split --lines=\$nl --filter=''pigz' -p '${params.num_threads}' > \$FILE.gz' - ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}${params.projectName}
-    else
-      cat ${file} | head -n 4000000 > ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq
-      smallsize=\$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq)
-      rm ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}.1mio.check.fq
-      nreads=\$(expr \${fullsize} \\* 1000000 / \${smallsize})
-      n=`expr \$nreads / ${params.num_threads}`
-      n=`expr \$n + 1`
-      nl=`expr \$n \\* 4`
-      split --lines=\$nl --filter=''pigz' -p '${params.num_threads}' > \$FILE.gz' ${file} ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}${params.projectName}
-    fi
-
-    ls ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}* | sed "s|${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/\${basefile}||"  > \${basefile}_tempfiles.txt
-    """
-}
 
 process detect_read_pairs {
 
@@ -129,6 +62,7 @@ process detect_read_pairs {
     output:
     file "*_pair.txt" into read_pairs_ch1
     file "*_pair.txt" into read_pairs_ch2
+    file "*_pair.txt" into read_pairs_ch3
 
     """
     #!/usr/bin/env Rscript
@@ -144,6 +78,7 @@ process detect_read_pairs {
     line2 <- as.list(strsplit(line2,split="\\\\s+")[[1]])
     if (identical(line1[[1]],line2[[1]])){
         read_pair <- c(x,cDNAsubset[n])
+        read_pair <- unique(read_pair)
         lapply(read_pair, write, paste0(basename(x),"_pair.txt"), append=TRUE, ncolumns=2)
     }else{
         n <-n+1
@@ -162,6 +97,64 @@ process detect_read_pairs {
 
 
 
+}
+
+process splitfq {
+
+    cpus = '32'
+    mem = '20G'
+    time = '00:15:00'
+
+    input:
+    each file from read_pairs_ch3
+
+    output:
+    file '*_tempfiles.txt' into tempfiles_ch1
+    file '*_tempfiles.txt' into tempfiles_ch2
+
+
+    """
+
+    IFS=\$'\\r\\n' GLOBIGNORE='*' command eval  'reads=(\$(cat ${file}))'
+
+    fullsize=\$(stat -L --printf="%s" \${reads[1]})
+
+    basefile=\$(basename ${file} | cut -f 1 -d '.')
+
+    if [[ \${reads[1]} =~ \\.gz\$ ]]; then
+      pigz -dc \${reads[1]} | head -n 4000000 | pigz > ${params.projectDir}${params.outputDir}.\${basefile}.1mio.check.fq.gz
+      smallsize=\$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}.1mio.check.fq.gz)
+      rm ${params.projectDir}${params.outputDir}.\${basefile}.1mio.check.fq.gz
+      nreads=\$(expr \${fullsize} \\* 1000000 / \${smallsize})
+      n=`expr \$nreads / ${params.num_threads}`
+      n=`expr \$n + 1`
+      nl=`expr \$n \\* 4`
+      for i in \${reads[@]} ; do
+        pref=\$(basename \${i} | cut -f 1 -d '.')
+        if [ ! -d "${params.projectDir}${params.outputDir}.\${pref}_tmpMerge" ]; then
+            mkdir ${params.projectDir}${params.outputDir}.\${pref}_tmpMerge
+        fi
+        pigz -dc -p ${params.num_threads} \${i} | split --lines=\$nl --filter=''pigz' -p '${params.num_threads}' > \$FILE.gz' - ${params.projectDir}${params.outputDir}.\${pref}_tmpMerge/\${pref}${params.projectName}
+        ls ${params.projectDir}${params.outputDir}.\${pref}_tmpMerge/\${pref}* | sed "s|${params.projectDir}${params.outputDir}.\${pref}_tmpMerge/\${pref}||"  > \${pref}_tempfiles.txt
+        done
+    else
+      cat \${reads[1]} | head -n 4000000 > ${params.projectDir}${params.outputDir}.\${basefile}.1mio.check.fq
+      smallsize=\$(stat --printf="%s" ${params.projectDir}${params.outputDir}.\${basefile}.1mio.check.fq)
+      rm ${params.projectDir}${params.outputDir}.\${basefile}.1mio.check.fq
+      nreads=\$(expr \${fullsize} \\* 1000000 / \${smallsize})
+      n=`expr \$nreads / ${params.num_threads}`
+      n=`expr \$n + 1`
+      nl=`expr \$n \\* 4`
+      for i in \${reads[@]} ; do
+        pref=\$(basename \${i} | cut -f 1 -d '.')
+        if [ ! -d "${params.projectDir}${params.outputDir}.\${pref}_tmpMerge" ]; then
+            mkdir ${params.projectDir}${params.outputDir}.\${pref}_tmpMerge
+        fi
+        split --lines=\$nl --filter=''pigz' -p '${params.num_threads}' > \$FILE.gz' \${i} ${params.projectDir}${params.outputDir}.\${pref}_tmpMerge/\${pref}${params.projectName}
+        ls ${params.projectDir}${params.outputDir}.\${pref}_tmpMerge/\${pref}* | sed "s|${params.projectDir}${params.outputDir}.\${pref}_tmpMerge/\${pref}||"  > \${pref}_tempfiles.txt
+      done
+    fi
+    """
 }
 
 process fqFilter {
@@ -405,6 +398,7 @@ process Mapping {
     val tmpFILT from collated_bam_ch.last()
     path index from genome_index_ch
     val layout from read_layout_ch1.last()
+    file gtf from gtf_ch2
 
     output:
     file "*.filtered.tagged.Log.final.out" into mapping_log_ch
@@ -431,7 +425,7 @@ process Mapping {
     project <- "${params.projectName}"
     STAR_index <- "${index}"
     num_threads <- ${params.num_threads}
-    GTF_file <- "${params.gtf}"
+    GTF_file <- "${gtf}"
     read_layout <- "${layout}"
     twoPass <- ${params.two_pass}
     additional_STAR_params <- "${params.additional_STAR_params}"
@@ -634,7 +628,7 @@ process Counting {
     opt\$barcodes\$demultiplex <- ${params.demultiplex}
     opt\$out_dir <- "${params.projectDir}${params.outputDir}"
     opt\$project <- "${params.projectName}"
-    opt\$num_threads <- "${params.num_threads}"
+    opt\$num_threads <- ${params.num_threads}
     opt\$mem_limit <- ${params.mem_limit}
     opt\$read_layout <- "${readLO}"
 
@@ -900,9 +894,9 @@ process Counting {
 
     ################# #Accessory processing scripts
     #Intron Probability Score Calculation
-    if(\ == TRUE){
+    if(opt\$counting_opts\$intronProb == TRUE){
     if(opt\$counting_opts\$introns == FALSE){
-        print("Intron information is needed to calculate Intron-Probability! Please change yaml settings counting_opts->introns to yes.\n Skipping probability calculation...")
+        print("Intron information is needed to calculate Intron-Probability! Please change yaml settings counting_opts->introns to yes.\\n Skipping probability calculation...")
     }else{
         library(extraDistr)
         print("Starting Intron-Probability Calculations...")
@@ -934,3 +928,4 @@ process Counting {
 
     """
 }
+
