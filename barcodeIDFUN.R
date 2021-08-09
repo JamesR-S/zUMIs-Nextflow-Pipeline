@@ -246,6 +246,9 @@ calcMADS<-function(bccount){
 plotReadCountSelection<-function(bccount , mads, filename){
   MAD_up=mads[1,2]
   MAD_low=mads[1,1]
+  if(!dir.exists( paste0(opt$out_dir,"zUMIs_output/stats/") )){
+    dir.create( paste0(opt$out_dir,"zUMIs_output/stats/") )
+  }
   pdf(file=filename)
   barplot(bccount$n,ylab="Number of reads",xlab="Cell Barcodes",
           ylim = c(0,1.1*max(c(bccount$n,MAD_up))))

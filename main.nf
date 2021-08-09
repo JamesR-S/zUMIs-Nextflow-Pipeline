@@ -631,6 +631,7 @@ process Counting {
     opt\$num_threads <- ${params.num_threads}
     opt\$mem_limit <- ${params.mem_limit}
     opt\$read_layout <- "${readLO}"
+    opt\$keptbc <- "${barcodes}"
 
 
     input <- read.csv("${params.input_csv}")
@@ -700,7 +701,7 @@ process Counting {
                 multi_overlap_var = opt\$multi_overlap,
                 samtoolsexc = samtoolsexc)
     try(gene_name_mapping <- .get_gene_names(gtf = paste0(opt\$out_dir,"/",opt\$project,".final_annot.gtf"), threads = opt\$num_threads), silent = TRUE)
-    try(data.table::fwrite(gene_name_mapping, file = paste0(opt\$out_dir,"/zUMIs_output/expression/",opt\$project,".gene_names.txt"), sep ="\t", quote = FALSE), silent = TRUE)
+    try(data.table::fwrite(gene_name_mapping, file = paste0(opt\$out_dir,"zUMIs_output/expression/",opt\$project,".gene_names.txt"), sep ="\t", quote = FALSE), silent = TRUE)
     ##
 
     if(smart3_flag & opt\$counting_opts\$strand == 1){
@@ -769,8 +770,8 @@ process Counting {
     system(paste0("rm ",outbamfile))
     }else{
     #run hamming distance collapsing here and write output into bam file
-    if(!dir.exists( paste0(opt\$out_dir,"/zUMIs_output/molecule_mapping/") )){
-        dir.create( paste0(opt\$out_dir,"/zUMIs_output/molecule_mapping/") )
+    if(!dir.exists( paste0(opt\$out_dir,"zUMIs_output/molecule_mapping/") )){
+        dir.create( paste0(opt\$out_dir,"zUMIs_output/molecule_mapping/") )
     }
 
     tmpbamfile <- outbamfile
@@ -824,7 +825,7 @@ process Counting {
 
     subS<-setDownSamplingOption( opt\$counting_opts\$downsampling,
                                 bccount= bccount,
-                                filename=paste(opt\$out_dir,"/zUMIs_output/stats/",opt\$project,
+                                filename=paste(opt\$out_dir,"zUMIs_output/stats/",opt\$project,
                                                 ".downsampling_thresholds.pdf",sep=""))
     print("Here are the detected subsampling options:")
     if(is.null(row.names(subS))){
@@ -922,7 +923,7 @@ process Counting {
     #################
 
     print(Sys.time())
-    print(paste("I am done!! Look what I produced...",opt\$out_dir,"/zUMIs_output/",sep=""))
+    print(paste("I am done!! Look what I produced...",opt\$out_dir,"zUMIs_output/",sep=""))
     print(gc())
     q()
 

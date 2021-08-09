@@ -339,7 +339,7 @@ convert2countM<-function(alldt,what){
   return(fmat)
 }
 write_molecule_mapping <- function(mm){
-  mm_path <- paste0(opt$out_dir,"/zUMIs_output/molecule_mapping/")
+  mm_path <- paste0(opt$out_dir,"zUMIs_output/molecule_mapping/")
   bcs <- unique(mm$BC)
   for(i in bcs){
     data.table::fwrite(mm[BC == i], file = paste0(mm_path,opt$project,".",i,".txt"), quote = F, sep = "\t")
@@ -347,9 +347,9 @@ write_molecule_mapping <- function(mm){
 }
 
 correct_UB_tags_new <- function(inbamfile,n){
-  mm_path <- paste0(opt$out_dir,"/zUMIs_output/molecule_mapping/",n,".")
+  mm_path <- paste0(opt$out_dir,"zUMIs_output/molecule_mapping/",n,".")
   outbamfile <-paste0(opt$project,".filtered.Aligned.GeneTagged.UBcorrected.sorted.bam")
-  bcpath <- paste0(opt$out_dir,"/zUMIs_output/",opt$project,"kept_barcodes.txt")
+  bcpath <- opt$keptbc
   use_threads <- opt$num_threads
   pypath <- paste0(opt$zUMIs_directory,"/correct_UBtag.py")
   UBcmd <- paste("python3", pypath,
@@ -363,8 +363,8 @@ correct_UB_tags_new <- function(inbamfile,n){
 }
 
 correct_UB_tags <- function(bccount, samtoolsexc){
-  mm_path <- paste0(opt$out_dir,"/zUMIs_output/molecule_mapping/")
-  demux_path <- paste0(opt$out_dir,"/zUMIs_output/demultiplexed/")
+  mm_path <- paste0(opt$out_dir,"zUMIs_output/molecule_mapping/")
+  demux_path <- paste0(opt$out_dir,"zUMIs_output/demultiplexed/")
   UB_cmd_list <- list()
   for(i in bccount$XC){
     bam <- paste0(demux_path,opt$project,".",i,".demx.bam")
@@ -378,7 +378,7 @@ correct_UB_tags <- function(bccount, samtoolsexc){
   UB_cmd_list <- unlist(UB_cmd_list)
   UB_files <- as.character(data.frame(strsplit(UB_cmd_list," "),stringsAsFactors=F)[3,])
   #UB_files <- paste(UB_files, collapse = " ")
-  UB_mergelist <- paste0(opt$out_dir,"/zUMIs_output/molecule_mapping/",opt$project,"mergelist.txt")
+  UB_mergelist <- paste0(opt$out_dir,"zUMIs_output/molecule_mapping/",opt$project,"mergelist.txt")
   write(UB_files, file = UB_mergelist)
   outbam <- paste0(opt$out_dir,"/",opt$project,".filtered.Aligned.GeneTagged.UBcorrected.sorted.bam")
   print("Creating sorted final bam file...")
@@ -390,8 +390,8 @@ correct_UB_tags <- function(bccount, samtoolsexc){
 }
 
 demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount, BCkeepfile){
-  if(!dir.exists( paste0(opt$out_dir,"/zUMIs_output/demultiplexed/") )){
-    dir.create( paste0(opt$out_dir,"/zUMIs_output/demultiplexed/") )
+  if(!dir.exists( paste0(opt$out_dir,"zUMIs_output/demultiplexed/") )){
+    dir.create( paste0(opt$out_dir,"zUMIs_output/demultiplexed/") )
   }
 
   installed_py <- try(system("pip freeze", intern = TRUE, ignore.stderr = TRUE), silent = TRUE)
@@ -413,17 +413,17 @@ demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount, BCkeepfile
       print(paste("Breaking up demultiplexing in",nchunks,"chunks. This may be because you have >10000 cells or a too low filehandle limit (ulimit -n)."))
 
       full_bclist <- BCkeepfile
-      bcsplit_prefix <- paste0(opt$out_dir,"/zUMIs_output/.",opt$project,"kept_barcodes.")
+      bcsplit_prefix <- paste0(opt$out_dir,"zUMIs_output/.",opt$project,"kept_barcodes.")
 
       split_cmd <- paste0("split -a 3 -n l/",nchunks," ",full_bclist, " ", bcsplit_prefix)
       system(split_cmd)
-      bclist <- list.files(path = paste0(opt$out_dir,"/zUMIs_output/"), pattern =  paste0(".",opt$project,"kept_barcodes."),all.files = TRUE, full.names = TRUE)
+      bclist <- list.files(path = paste0(opt$out_dir,"zUMIs_output/"), pattern =  paste0(".",opt$project,"kept_barcodes."),all.files = TRUE, full.names = TRUE)
       header_cmd <- paste('sed -i -e \'1s/^/XC,n,cellindex\\n/\'', bclist[-1], collapse = '; ', sep = ' ')
       system(header_cmd)
 
       if(max_filehandles < nBCs){threads_perBC <- 1}
     }else{
-      bclist <- paste0(opt$out_dir,"/zUMIs_output/",opt$project,"kept_barcodes.txt")
+      bclist <- opt$keptbc
     }
 
     if(threads_perBC > 2){
@@ -443,7 +443,7 @@ demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount, BCkeepfile
       }
       chromosomes_todo <- Rsamtools::seqinfo(Rsamtools::BamFile(bamfile))
       chromosomes_todo <- c(seqnames(chromosomes_todo), "zunmapped") #don't forget the unmapped reads :)
-      tmp_outdir <- paste0(opt$out_dir,"/zUMIs_output/demultiplexed/",opt$project,"/")
+      tmp_outdir <- paste0(opt$out_dir,"zUMIs_output/demultiplexed/",opt$project,"/")
       dir.create(tmp_outdir, showWarnings = FALSE)
       xyz <- parallel::mclapply(chromosomes_todo, function(chr){
         pysam_cmd <- paste(
@@ -460,7 +460,7 @@ demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount, BCkeepfile
 
     }else{
       collect_demultiplex = FALSE
-      outstub <- paste0(opt$out_dir,"/zUMIs_output/demultiplexed/",opt$project,".")
+      outstub <- paste0(opt$out_dir,"zUMIs_output/demultiplexed/",opt$project,".")
       demux_cmd <- paste(
         "python3", py_script,
         "--bam", bamfile,
@@ -481,7 +481,7 @@ demultiplex_bam <- function(opt, bamfile, nBCs, samtoolsexc, bccount, BCkeepfile
   if(collect_demultiplex){
     xyz <- parallel::mclapply(bccount$XC, function(x){
       cell_files <- paste0(tmp_outdir,x,".",chromosomes_todo,".demx.bam", collapse = " ")
-      output_file <- paste0(opt$out_dir,"/zUMIs_output/demultiplexed/",opt$project,".",x,".demx.bam")
+      output_file <- paste0(opt$out_dir,"zUMIs_output/demultiplexed/",opt$project,".",x,".demx.bam")
       cat_cmd <- paste(samtoolsexc, "cat", "-o", output_file, cell_files)
       system(cat_cmd)
     }, mc.cores = opt$num_threads)
@@ -606,7 +606,7 @@ RPKM.calc <- function(exprmat, gene.length){
   print("Fetching reads from bam files again to calculate intron scores...")
 
   nchunks <- length(unique(bccount$chunkID))
-  all_rgfiles <- paste0(opt$out_dir,"/zUMIs_output/.",opt$project,".RGgroup.",1:nchunks,".txt")
+  all_rgfiles <- paste0(opt$out_dir,"zUMIs_output/.",opt$project,".RGgroup.",1:nchunks,".txt")
 
   for(i in unique(bccount$chunkID)){
     rgfile <- all_rgfiles[i]
@@ -621,7 +621,7 @@ RPKM.calc <- function(exprmat, gene.length){
   layoutflag <- ifelse(opt$read_layout == "PE", "-f 0x0040", "")
   samcommand <- paste(samtoolsexc," view -x QB -x QU -x BX -x NH -x AS -x nM -x HI -x IH -x NM -x uT -x MD -x jM -x jI -x XN -x XS -x UX -x UB -x EN -x IN -x GE -x GI", layoutflag, "-@")
 
-  outfiles <- paste0(opt$out_dir,"/zUMIs_output/.",opt$project,".tmp.",1:nchunks,".txt")
+  outfiles <- paste0(opt$out_dir,"zUMIs_output/.",opt$project,".tmp.",1:nchunks,".txt")
   system(paste(headercommand,outfiles,collapse = "; "))
 
   cpusperchunk <- round(cores/nchunks,0)
@@ -637,7 +637,7 @@ RPKM.calc <- function(exprmat, gene.length){
   for(i in unique(bccount$chunkID)){
     print(paste("Working on barcode chunk", i, "out of", length(unique(bccount$chunkID))))
     print(paste("Processing", length(bccount[chunkID == i]$XC), "barcodes in this chunk..."))
-    samfile <- paste0(opt$out_dir,"/zUMIs_output/.",opt$project,".tmp.",i,".txt")
+    samfile <- paste0(opt$out_dir,"zUMIs_output/.",opt$project,".tmp.",i,".txt")
 
     reads<-data.table::fread(samfile, na.strings=c(""),
                              select=c(1,2,3),header=T,fill=T,colClasses = "character" , col.names = c("RG","ES","IS") )
