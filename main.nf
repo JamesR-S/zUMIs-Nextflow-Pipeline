@@ -171,6 +171,7 @@ process fqFilter {
     file "*.bamlist.txt" into bamlists_ch
     env read_layout into read_layout_ch1
     env read_layout into read_layout_ch2
+    env read_layout into read_layout_ch3
     file "*.BCstats.txt" into bcstats_ch
 
 
@@ -220,6 +221,7 @@ process collectBCstats {
 
     output:
     file "${params.projectName}.BCstats.txt" into cat_bcstats_ch
+    file "${params.projectName}.BCstats.txt" into cat_bcstats_ch2
 
     """
     bcfiles=(${files.join(" ")})
@@ -239,13 +241,15 @@ process barcode_detect {
     time = '04:30:00'
 
     input:
-    file file from cat_bcstats_ch
+    val file from cat_bcstats_ch
 
     output:
     file "*.detected_cells.pdf" into detected_cells_ch
-    file "*_kept_barcodes.txt" into kept_barcodes_ch
+    file "*_kept_barcodes.txt" into kept_barcodes_ch1
+    file "*_kept_barcodes.txt" into kept_barcodes_ch2 
     file("*.BCbinning.txt") optional true into bc_binning_ch
-    file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch
+    file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch1
+    file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch2
 
 
     """
@@ -270,11 +274,11 @@ process barcode_detect {
     if (barcode_file == "") barcode_file <- NULL
     barcode_num <- "${params.barcode_num}"
     if (barcode_num == "") barcode_num <- NULL
-    bcauto <- as.logical("${params.barcode_automatic}")
+    bcauto <- ${params.barcode_automatic}
     out_dir <- "${params.projectDir}${params.outputDir}"
     project <- "${params.projectName}"
     zUMIs_directory <- "${params.projectDir}${params.binDir}"
-    n_reads_per_cell <- "${params.n_reads_per_cell}"
+    n_reads_per_cell <- ${params.n_reads_per_cell}
     barcode_binning <- "${params.barcode_binning}"
     num_threads <- "${params.num_threads}"
     barcode_sharing <- "${params.barcode_sharing}"
@@ -338,7 +342,7 @@ process barcode_detect {
 }
 
 bc_binning_ch = bc_binning_ch.ifEmpty('EMPTY')
-kept_bc_binned_ch = kept_bc_binned_ch.ifEmpty('EMPTY')
+kept_bc_binned_ch1 = kept_bc_binned_ch1.ifEmpty('EMPTY')
 
 process BC_bin_bam_collate {
 
@@ -392,7 +396,7 @@ process Mapping {
 
     cpus = '32'
     mem = '40G'
-    time = '04:30:00'
+    time = '02:30:00'
 
     input:
     val tmpFILT from collated_bam_ch.last()
@@ -567,15 +571,15 @@ process Mapping {
     out_txbams <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Aligned.toTranscriptome.out.bam"), full = TRUE)
     merge_txbams <- paste(samtools,"cat -o",paste0(project,".filtered.tagged.Aligned.toTranscriptome.out.bam"),paste(out_txbams, collapse = " "))
     system(paste(merge_logs,"&",merge_bams,"&",merge_txbams,"& wait"))
-    system(paste0("rm -r ", map_tmp_dir, "tmp.", project, ".*"))
+    unlink(map_tmp_dir, recursive = TRUE)
+    q(save = "no")
     }else{
     STAR_command <- paste(STAR_command,
         "--readFilesIn",paste0(filtered_bams,collapse=","),
         "--outFileNamePrefix",paste(project,".filtered.tagged.",sep="")
     )
-
-        system(paste(STAR_command,"& wait"))
-
+    system(paste(STAR_command,"& wait"))
+    q(save = "no")
     }
 
     """
@@ -591,17 +595,17 @@ process Counting {
     time = '04:30:00'
     
     input:
-    val barcodes from kept_barcodes_ch
-    val keptBC from kept_bc_binned_ch
+    val barcodes from kept_barcodes_ch1
+    val keptBC from kept_bc_binned_ch1
     val readLO from read_layout_ch2.last()
     file alignedBAM from aligned_bam_ch
 
     output:
-    file "*.filtered.Aligned.GeneTagged.UBcorrected.sorted.bam" into UB_corrected_bam_ch
-    file "*.filtered.Aligned.GeneTagged.bam" into genetagged_bam_ch
-    file "*.filtered.Aligned.GeneTagged.sorted.bam" into sorted_bam_ch
-    file "*.intronProbability.rds" into intronProbability_ch
-    file "*.dgecounts.rds" into dgecounts_ch
+    file "*.filtered.Aligned.GeneTagged.UBcorrected.sorted.bam" into UB_corrected_bam_ch1
+    file "*.filtered.Aligned.GeneTagged.UBcorrected.sorted.bam" into UB_corrected_bam_ch2
+    file "*.intronProbability.rds" optional true into intronProbability_ch
+    file "*.dgecounts.rds" into dgecounts_ch1
+    file "*.dgecounts.rds" into dgecounts_ch2
 
     """
     #!/usr/bin/env Rscript
@@ -925,8 +929,379 @@ process Counting {
     print(Sys.time())
     print(paste("I am done!! Look what I produced...",opt\$out_dir,"zUMIs_output/",sep=""))
     print(gc())
-    q()
+    q(save = "no")
 
     """
 }
 
+process rds2loom {
+
+    cpus = '32'
+    mem = '40G'
+    time = '04:30:00'
+    
+    input:
+    file counts from dgecounts_ch1
+
+
+    output:
+    file "*.loom" into loom_files_ch
+
+    """
+    #!/usr/bin/env Rscript
+    require(yaml)
+    require(Matrix)
+    suppressMessages(require(R.utils))
+
+    opt <- NULL
+
+    opt\$out_dir <- "${params.projectDir}${params.outputDir}"
+    opt\$project <- "${params.projectName}"
+
+    rds_to_loom <- function(zUMIsRDS){
+      rds <- readRDS(zUMIsRDS)
+      for(type in names(rds)){
+        for(quant in names(rds[[type]])){
+          outfile <- paste0(opt\$project,".",type,".",quant,".all.loom")
+          loomR::create(filename = outfile, data = as.matrix(rds[[type]][[quant]][["all"]]), do.transpose = TRUE,overwrite = TRUE)
+          
+          for(d in names(rds[[type]][[quant]][["downsampling"]])){
+            outfile <- paste0(opt\$project,".",type,".",quant,".",d,".loom")
+            loomR::create(filename = outfile, data = as.matrix(rds[[type]][[quant]][["downsampling"]][[d]]), do.transpose = TRUE,overwrite = TRUE)
+            
+          }
+        }
+      }
+    }
+
+    suppressMessages(require("loomR"))
+
+
+    ##########################
+
+    checkLoomR() #check for loomR package
+
+    rds_loc <- "${counts}"
+    rds_to_loom(rds_loc)
+
+    q(save = "no")
+
+    """
+}
+
+if(params.velocyto) {
+
+    process velocyto {
+        
+        cpus = '32'
+        mem = '40G'
+        time = '04:30:00'
+
+        input:
+        file bam from UB_corrected_bam_ch1
+
+        """
+        #!/usr/bin/env Rscript
+        suppressMessages(require(R.utils))
+
+        ##########################
+
+        samtoolsexc <- "samtools"
+
+        opt <- NULL
+
+        opt\$out_dir <- "${params.projectDir}${params.outputDir}"
+        opt\$project <- "${params.projectName}"
+        opt\$num_threads <- ${params.num_threads}
+        opt\$mem_limit <- ${params.mem_limit}
+        opt\$counting_opts\$primaryHit <- ${params.primary_hit}
+
+        input<-read.csv("${params.input_csv}")
+
+        sequence_files <- as.list(NULL)
+        for (i in 1:nrow(input)){
+        name <- input\$name[i]
+        cDNA <- if (is.na(input\$cDNA[i])) NULL else paste0("cDNA(",input\$cDNA[i],")")
+        BC <- if (is.na(input\$BC[i])) NULL else paste0("BC(",input\$BC[i],")")
+        UMI <- if (is.na(input\$UMI[i])) NULL else paste0("UMI(",input\$UMI[i],")")
+        if (cDNA == "cDNA()") cDNA <- NULL
+        if (BC == "BC()") BC <- NULL
+        if (UMI == "UMI()") UMI <- NULL
+        base_definition <- c(cDNA,BC,UMI)
+        if (is.null(base_definition)) base_definition <- NULL
+        filter_cutoffs <- input\$filter_cutoffs[i]
+        correct_frameshift <- input\$correct_frameshift[i]
+        if (is.na(filter_cutoffs)) filter_cutoffs <- NULL
+        if (is.na(correct_frameshift)) correct_frameshift <- NULL
+        sequence_files[[paste0("file",i)]] <- list(name,base_definition,filter_cutoffs,correct_frameshift)
+        names(sequence_files[[paste0("file",i)]]) <- (c("name","base_definition","filter_cutoffs","correct_frameshift"))
+        }
+
+        if(is.null(opt\$mem_limit)){
+          mempercpu <- round(100/opt\$num_threads,0)
+        }else{
+          mempercpu <- round(opt\$mem_limit/opt\$num_threads,0)
+          if(mempercpu==0){
+                mempercpu <- 1
+          }
+        }
+
+        featfile <- "${bam}"
+
+
+        ##########################
+
+        print(Sys.time())
+        #prepare the bam file for use with velocyto
+        print("Preparing bam file for velocyto...")
+        retag_cmd <- paste0(samtoolsexc," view -@ 2 -h ",featfile," | sed 's/BC:Z:/CB:Z:/' | sed 's/GE:Z:/GX:Z:/'")
+        velobam <- paste0(opt\$out_dir,"/",opt\$project,".tagged.forVelocyto.bam")
+        #sort_cmd <- paste0(samtoolsexc," sort -m ",mempercpu,"G -O BAM -@ ",opt\$num_threads," -o ",velobam )
+        out_cmd <- paste0(samtoolsexc," view -b -@ ",opt\$num_threads," -o ",velobam," - " )
+        #system(paste(retag_cmd,sort_cmd,sep=" | "))
+        system(paste(retag_cmd,out_cmd,sep=" | "))
+
+        print(Sys.time())
+
+        #prepare BC whitelist
+        bc<-data.table::fread(paste0(opt\$out_dir,"zUMIs_output/",opt\$project,"kept_barcodes.txt"),select = 1, header = T)
+        bcpath<-paste0(opt\$out_dir,"zUMIs_output/",opt\$project,".BCwhitelist.txt")
+        data.table::fwrite(bc,file = bcpath,col.names = F,row.names = F)
+
+        #prepare annotation
+        gtf <- paste0(opt\$out_dir,"/",opt\$project,".final_annot.gtf")
+
+        #decide wether to run in UMI or no-UMI mode
+        UMI_check <- lapply(sequence_files, 
+              function(x) {
+                if(!is.null(x\$base_definition)) {
+                  if(any(grepl("^UMI",x\$base_definition))) return("UMI method detected.")
+                }
+              })
+
+        umi_decision <- ifelse(length(unlist(UMI_check))>0,"","--without-umi")
+        mm_decision <- ifelse(opt\$counting_opts\$primaryHit,"--multimap","")
+
+        #run velocyto
+
+        print("Attempting to run RNA velocity...")
+        velo_check <- suppressWarnings(system("which velocyto",intern =T))
+        if(length(velo_check) == 0){
+          print("No velocyto installation found in path. Please install it via pip.")
+        }else{
+          velo_cmd <- paste(velo_check[1],"run -vv --umi-extension Gene -b",bcpath,"-o",paste0(opt\$out_dir,"zUMIs_output/velocity/"),umi_decision,mm_decision, "-e",opt\$project,"--samtools-threads",opt\$num_threads,"--samtools-memory",mempercpu*1000,velobam,gtf,sep=" ")
+          
+          try(system(paste0(velo_cmd," > ",opt\$out_dir,"/",opt\$project,".velocityo.log.out 2>&1")))
+          print("RNA velocity done!")
+          
+        }
+
+        print(Sys.time())
+
+        q(save = "no")
+
+        """
+
+    }
+}
+
+process summary_stats {
+
+    cpus = '32'
+    mem = '40G'
+    time = '04:30:00'
+
+    input:
+    file bam from UB_corrected_bam_ch2
+    val read_layout from read_layout_ch3.first()
+    file barcodes from kept_barcodes_ch2
+    file binned_BC from kept_bc_binned_ch2
+    file BCstats from cat_bcstats_ch2
+    file counts from dgecounts_ch1
+
+    output:
+
+    """
+    #!/usr/bin/env Rscript
+    print("I am loading useful packages for plotting...")
+    print(Sys.time())
+
+    # optparse  ---------------------------------------------------------------
+    library(methods)
+    library(data.table)
+    library(yaml)
+    library(ggplot2)
+    library(Matrix)
+    suppressMessages(library(dplyr))
+    suppressMessages(library(Rsamtools))
+    suppressMessages(library(cowplot))
+    suppressMessages(require(R.utils))
+    options(datatable.fread.input.cmd.message=FALSE)
+    ##########################
+
+    opt <- NULL
+    opt\$zUMIs_directory <- "${params.projectDir}${params.binDir}"
+    opt\$barcodes\$BarcodeBinning <- ${params.barcode_binning}
+    opt\$barcodes\$nReadsperCell <- ${params.n_reads_per_cell}
+    opt\$counting_opts\$introns <- ${params.include_introns}
+    opt\$out_dir <- "${params.projectDir}${params.outputDir}"
+    opt\$project <- "${params.projectName}"
+    opt\$num_threads <- ${params.num_threads}
+    opt\$mem_limit <- ${params.mem_limit}
+    opt\$read_layout <- "${read_layout}"
+    opt\$BCcount <- "${BCstats}"
+
+    sequence_files <- as.list(NULL)
+    for (i in 1:nrow(input)){
+    name <- input\$name[i]
+    cDNA <- if (is.na(input\$cDNA[i])) NULL else paste0("cDNA(",input\$cDNA[i],")")
+    BC <- if (is.na(input\$BC[i])) NULL else paste0("BC(",input\$BC[i],")")
+    UMI <- if (is.na(input\$UMI[i])) NULL else paste0("UMI(",input\$UMI[i],")")
+    if (cDNA == "cDNA()") cDNA <- NULL
+    if (BC == "BC()") BC <- NULL
+    if (UMI == "UMI()") UMI <- NULL
+    base_definition <- c(cDNA,BC,UMI)
+    if (is.null(base_definition)) base_definition <- NULL
+    filter_cutoffs <- input\$filter_cutoffs[i]
+    correct_frameshift <- input\$correct_frameshift[i]
+    if (is.na(filter_cutoffs)) filter_cutoffs <- NULL
+    if (is.na(correct_frameshift)) correct_frameshift <- NULL
+    sequence_files[[paste0("file",i)]] <- list(name,base_definition,filter_cutoffs,correct_frameshift)
+    names(sequence_files[[paste0("file",i)]]) <- (c("name","base_definition","filter_cutoffs","correct_frameshift"))
+    }
+
+    samtoolsexc <- "samtools"
+
+    setwd(opt\$out_dir)
+    featColors<-c("#1A5084", "#914614" ,"#118730","grey33","tan1","#631879FF","gold1","grey73","firebrick3")
+    names(featColors)<-c("Exon","Intron+Exon","Intron","Unmapped","Ambiguity","MultiMapping","Intergenic","Unused BC","User")
+    #####################################
+
+    source(paste0(opt\$zUMIs_directory,"/statsFUN.R"))
+    #splitRG <- function(x) {0}
+    #suppressMessages(insertSource(paste0(opt\$zUMIs_directory,"/UMIstuffFUN.R"), functions="splitRG"))
+
+    data.table::setDTthreads(threads=opt\$num_threads)
+
+    user_seq<- getUserSeq(paste0(opt\$out_dir,"/",opt\$project,".final_annot.gtf"))  # find a way to read from end of file or grep the last
+    bc<-data.table::fread("${barcodes}",select = 1, header = T)
+    AllCounts<-readRDS("${counts}")
+
+
+    featfile <- "${bam}"
+    #featfile <- paste0(opt\$out_dir,"/",opt\$project,".filtered.Aligned.GeneTagged.sorted.bam")
+
+    #check if PE / SE flag is set correctly
+    if(is.null(opt\$read_layout)){
+      opt\$read_layout <- check_read_layout(featfile)
+    }
+
+    ############### in case of smart3, check UMI fragment counts
+    if(any(grepl(pattern = "ATTGCGCAATG",x = unlist(sequence_files)))){
+      print("Counting UMI fragments...")
+      script_filepath <- paste0(opt\$zUMIs_directory,"/misc/countUMIfrags.py")
+      bam_filepath <- featfile
+      if(opt\$barcodes\$BarcodeBinning > 0){
+        bc_filepath <- "${binned_BC}"
+      }else{
+        bc_filepath <- "${barcodes}"
+      }
+      system(paste(script_filepath,'--bam',bam_filepath,'--bcs',bc_filepath,'--p',opt\$num_threads,"&"))
+    }
+
+    # GeneCounts --------------------------------------------------------------
+
+    genecounts <- suppressWarnings(dplyr::bind_rows( lapply(names(AllCounts\$readcount), function(i){
+                          countGenes(AllCounts\$readcount[[i]][["all"]], user_seq=user_seq) %>%
+                          mutate(type=case_when( i == "exon" ~ "Exon",
+                                                  i == "inex" ~ "Intron+Exon",
+                                                  i == "intron" ~ "Intron")) })))
+
+    umicounts <- suppressWarnings(dplyr::bind_rows( lapply(names(AllCounts\$umicount), function(i){
+                            countUMIs(AllCounts\$umicount[[i]][["all"]], user_seq=user_seq) %>%
+                            mutate(type=case_when( i == "exon" ~ "Exon",
+                                                    i == "inex" ~ "Intron+Exon",
+                                                    i == "intron" ~ "Intron"))})))
+
+    med<-genecounts %>% dplyr::group_by(type) %>% dplyr::summarise(n=round(median(Count)))
+    write.table(genecounts,file = paste0(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".genecounts.txt"),sep="\t",row.names = F,col.names = T)
+
+    ag <- countBoxplot(cnt = genecounts,
+                      ylab= "Number of Genes",
+                      fillcol=featColors[unique(genecounts\$type)],
+                      lab = med)
+
+    if(length(umicounts) > 0){
+      medUMI<-try(umicounts %>% dplyr::group_by(type) %>% dplyr::summarise(n=round(median(Count))))
+      try(write.table(umicounts,file = paste0(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".UMIcounts.txt"),sep="\t",row.names = F,col.names = T))
+      bg <- try(countBoxplot(cnt = umicounts,
+                            ylab= "Number of UMIs",
+                            fillcol=featColors[unique(umicounts\$type)],
+                            lab = medUMI))
+      cp<-try(cowplot::plot_grid(ag,bg,ncol = 2))
+    }else{
+      cp <- ag
+    }
+
+    try(ggsave(cp,filename = paste(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".geneUMIcounts.pdf",sep=""),width = 10,height = 5))
+
+    ## Total number of reads per gene
+    reads_per_gene <- sumGene(counts = AllCounts)
+    data.table::fwrite(reads_per_gene, file = paste0(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".reads_per_gene.txt"), quote = F, sep = "\t")
+
+    ## Total number of reads per cell
+
+    typeCount <- sumstatBAM( featfile = featfile,
+                            cores = opt\$num_threads,
+                            outdir= opt\$out_dir,
+                            user_seq = user_seq,
+                            bc = bc,
+                            inex = opt\$counting_opts\$introns,
+                            outfile = paste0(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".bc.READcounts.rds"),
+                            samtoolsexc=samtoolsexc)
+
+    #only print per BC mapping stats if there are fewer than 200 BCs
+    tc<-data.frame(typeCount)
+    tc\$type<-factor(tc\$type, levels=rev(c("Exon","Intron","Intergenic","Ambiguity","Unmapped","User")))
+    write.table(tc,file = paste(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".readspercell.txt",sep=""),sep="\t",row.names = F,col.names = T)
+
+    # if(length( unique(typeCount\$RG))<=200  ){
+    #   p <- ggplot( tc, aes(x=reorder(RG,N), y=N,fill=type))+
+    #         geom_bar(stat = "identity",alpha=0.9,width=0.7) +
+    #         xlab("") +
+    #         ylab("log10(Number of reads)") +
+    #         scale_fill_manual(values=featColors[levels(tc\$type)])+
+    #         scale_y_log10() +
+    #         theme_bw() +
+    #         coord_flip()+
+    #         theme(axis.text.y = element_text(size=5,family="Courier" ),
+    #            axis.title.y = element_text(size=20),
+    #            legend.title = element_blank())
+    #
+    #   ggsave(p,filename = paste(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".readspercell.pdf",sep=""),width = 10,height = 7)
+    # }
+
+    ##### Reads per cell based on their assignment type ###3
+    ### total Barplot
+
+    bar<-totReadCountBarplot(typeCount = typeCount,
+                            fillcol= featColors)
+
+    ############### per BC read boxplot
+
+    box<-totReadBoxplot(typeCount = typeCount,
+                        fillcol= featColors)
+
+    d<-plot_grid(cp,bar,box,ncol = 1,rel_heights  = c(0.3,0.2,0.5))
+
+    ggsave(d,filename = paste(opt\$out_dir,"zUMIs_output/stats/",opt\$project,".features.pdf",sep=""),width = 12,height = 9)
+
+
+    ###############
+    system("wait")
+    gc()
+
+    q(save = "no")
+
+    """
+}
