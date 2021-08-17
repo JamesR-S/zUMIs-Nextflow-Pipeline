@@ -82,7 +82,7 @@ prep_samtools_stats <- function(featfile,bccount,inex,cores,samtoolsexc){
 sumstatBAM <- function(featfile,cores,outdir,user_seq,bc,inex,outfile,samtoolsexc){
   require(data.table)
   # chunk barcodes
-  bccount_file <- paste0(opt$out_dir,"/", opt$project, ".BCstats.txt")
+  bccount_file <- opt$BCcount
   bccount <- data.table::fread( bccount_file ,col.names = c("XC","n"))[,list(n=sum(n)),by=XC][n>=opt$barcodes$nReadsperCell][order(-n)]
   if(sum(bccount$n)>1e+09){ #for huge datasets, don't summarise "bad BCs"
     bccount <- bccount[XC %in% bc$XC]

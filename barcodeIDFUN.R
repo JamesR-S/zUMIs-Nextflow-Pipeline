@@ -205,7 +205,6 @@ setDownSamplingOption<-function( down ,bccount, filename=NULL){
 #bccount needs to be read
 cellBC<-function(bcfile, bcnum, bcauto, bccount_file, outfilename=NULL){
   bccount<-data.table::fread( bccount_file, header = FALSE, col.names = c("XC","n") )[, .(n = sum(n)), by = XC]
-  write.csv(bccount, "bccount.csv")
   bccount<-bccount[n>=n_reads_per_cell][order(-n)][,cellindex:=1:(.N)][,keep:=FALSE]
 
   if(is.null(bcfile)==FALSE & bcauto){
