@@ -24,7 +24,7 @@ process copyResourceFiles {
 process generateIndex {
 
     cpus = '6'
-    mem = '20G'
+    mem = "${params.mem_limit}G"
     time = '02:00:00'
 
     input:
@@ -101,7 +101,7 @@ process detect_read_pairs {
 
 process splitfq {
 
-    cpus = '32'
+    cpus = "${params.num_threads}"
     mem = '20G'
     time = '00:15:00'
 
@@ -159,9 +159,9 @@ process splitfq {
 
 process fqFilter {
 
-    cpus = '32'
+    cpus = "${params.num_threads}"
     mem = '20G'
-    time = '00:30:00'
+    time = '01:30:00'
 
     input:
     val tfiles from tempfiles_ch2.collect()
@@ -212,7 +212,7 @@ process fqFilter {
 
 process collectBCstats {
 
-    cpus = '32'
+    cpus = "${params.num_threads}"
     mem = '20G'
     time = '00:05:00'
 
@@ -236,8 +236,8 @@ process collectBCstats {
 
 process barcode_detect {
 
-    cpus = '32'
-    mem = '40G'
+    cpus = "${params.num_threads}"
+    mem = "${params.mem_limit}G"
     time = '04:30:00'
 
     input:
@@ -246,7 +246,8 @@ process barcode_detect {
     output:
     file "*.detected_cells.pdf" into detected_cells_ch
     file "*_kept_barcodes.txt" into kept_barcodes_ch1
-    file "*_kept_barcodes.txt" into kept_barcodes_ch2 
+    file "*_kept_barcodes.txt" into kept_barcodes_ch2
+    file "*_kept_barcodes.txt" into kept_barcodes_ch3 
     file("*.BCbinning.txt") optional true into bc_binning_ch
     file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch1
     file("*kept_barcodes_binned.txt") optional true into kept_bc_binned_ch2
@@ -346,8 +347,8 @@ kept_bc_binned_ch1 = kept_bc_binned_ch1.ifEmpty('EMPTY')
 
 process BC_bin_bam_collate {
 
-    cpus = '32'
-    mem = '40G'
+    cpus = "${params.num_threads}"
+    mem = "${params.mem_limit}G"
     time = '01:30:00'
 
     input:
@@ -388,14 +389,20 @@ process BC_bin_bam_collate {
     for x in "\${temp_files[@]}" ; do
         mv ${params.projectDir}${params.outputDir}.\${basefile}_tmpMerge/${params.projectName}.\${x}.filtered.tagged.bam ${params.projectDir}${params.outputDir}.tmpFiltered/${params.projectName}.\${basefile}.\${x}.filtered.tagged.bam
     done
+
+    while read p; do
+        fname=\$(basename \${p} | cut -f 1 -d '.')
+        rm -r ${params.projectDir}${params.outputDir}.\${fname}_tmpMerge
+    done <${file}
+
     tmpFILT="${params.projectDir}${params.outputDir}.tmpFiltered"
     """
 }
 
 process Mapping {
 
-    cpus = '32'
-    mem = '40G'
+    cpus = "${params.num_threads}"
+    mem = "${params.mem_limit}G"
     time = '02:30:00'
 
     input:
@@ -404,6 +411,8 @@ process Mapping {
     val layout from read_layout_ch1.last()
     file gtf from gtf_ch2
 
+    publishDir "${params.projectDir}${params.outputDir}", mode: 'copy', pattern: "*.filtered.tagged.Log.final.out"
+
     output:
     file "*.filtered.tagged.Log.final.out" into mapping_log_ch
     file "*.filtered.tagged.Aligned.out.bam" into aligned_bam_ch
@@ -411,14 +420,13 @@ process Mapping {
 
 
     """
-    #!/usr/bin/env Rscript
+    #!/usr/bin/env Rscript --vanilla
 
     .libPaths(c("/usr/local/lib/R/site-library","/usr/lib/R/site-library","/usr/lib/R/library"))
 
     suppressMessages(require(data.table))
     suppressMessages(require(R.utils))
     options(datatable.fread.input.cmd.message=FALSE)
-    Sys.time()
     inp <- commandArgs(trailingOnly = T, asValues=T)
 
     samtools <- "samtools"
@@ -550,7 +558,7 @@ process Mapping {
 
     #finally, run STAR
     if(num_star_instances>1){
-    map_tmp_dir <- paste0(out_dir,"zUMIs_output/.tmpMap/")
+    map_tmp_dir <- "tmpMap"
     dir.create(path = map_tmp_dir,showWarnings = FALSE)
     input_split <- split(filtered_bams, ceiling(seq_along(filtered_bams) / ceiling(length(filtered_bams) / num_star_instances)))
     input_split <- sapply(input_split, paste0, collapse = ",")
@@ -561,7 +569,7 @@ process Mapping {
         "--outFileNamePrefix",paste0(map_tmp_dir,"/tmp.",project,".",x,"."))
     })
     STAR_command <- paste(unlist(STAR_command), collapse = " & ")
-    system(paste(STAR_command,"& wait"))
+    system(paste(STAR_command,"& wait"), wait = TRUE)
     
     #after parallel instance STAR, collect output data in the usual file places
     out_logs <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Log.final.out"), full = TRUE)
@@ -570,17 +578,30 @@ process Mapping {
     merge_bams <- paste(samtools,"cat -o",paste0(project,".filtered.tagged.Aligned.out.bam"),paste(out_bams, collapse = " "))
     out_txbams <- list.files(map_tmp_dir, pattern = paste0("tmp.",project,".*.Aligned.toTranscriptome.out.bam"), full = TRUE)
     merge_txbams <- paste(samtools,"cat -o",paste0(project,".filtered.tagged.Aligned.toTranscriptome.out.bam"),paste(out_txbams, collapse = " "))
-    system(paste(merge_logs,"&",merge_bams,"&",merge_txbams,"& wait"))
-    unlink(map_tmp_dir, recursive = TRUE)
-    q(save = "no")
-    }else{
+    system(paste(merge_logs,";",merge_bams,";",merge_txbams, "; wait"), wait = TRUE)
+    system(paste0("echo 'Cleaning temp files' ; rm -r ", map_tmp_dir, " ; rm -r ",out_dir, ".tmpFiltered ; echo '...'" ), wait = TRUE)
+    while( dir.exists(map_tmp_dir)) {
+        system("sleep 1")
+        print("...")
+    } 
+    while( dir.exists(paste0(out_dir,".tmpFiltered"))) {
+        system("sleep 1")
+        print("...")
+    }
+    print(paste0("Cleanup complete, ending process at ",Sys.time()))
+    quit(save = "no")
+    }
+    if(num_star_instances==1){
     STAR_command <- paste(STAR_command,
         "--readFilesIn",paste0(filtered_bams,collapse=","),
         "--outFileNamePrefix",paste(project,".filtered.tagged.",sep="")
     )
     system(paste(STAR_command,"& wait"))
-    q(save = "no")
-    }
+    system(paste0("echo 'Cleaning temp files' ; rm -r ",out_dir, ".tmpFiltered ; wait'" ), wait = TRUE)
+    while( !dir.exists(paste0(out_dir,".tmpFiltered"))) {
+        print(paste0("Cleanup complete, ending process at ",Sys.time()))
+        quit(save = "no")
+    }}
 
     """
 
@@ -590,8 +611,8 @@ process Mapping {
 
 process Counting {
 
-    cpus = '32'
-    mem = '40G'
+    cpus = "${params.num_threads}"
+    mem = "${params.mem_limit}G"
     time = '04:30:00'
     
     input:
@@ -599,6 +620,8 @@ process Counting {
     val keptBC from kept_bc_binned_ch1
     val readLO from read_layout_ch2.last()
     file alignedBAM from aligned_bam_ch
+
+    publishDir "${params.projectDir}${params.outputDir}zUMIs_output", mode: 'copy'
 
     output:
     file "*.filtered.Aligned.GeneTagged.UBcorrected.sorted.bam" into UB_corrected_bam_ch1
@@ -615,6 +638,7 @@ process Counting {
     library(ggplot2)
     suppressMessages(require(R.utils))
     suppressPackageStartupMessages(library(Rsamtools))
+    Sys.time()
 
     opt <- NULL
     opt\$zUMIs_directory <- "${params.projectDir}${params.binDir}"
@@ -929,6 +953,7 @@ process Counting {
     print(Sys.time())
     print(paste("I am done!! Look what I produced...",opt\$out_dir,"zUMIs_output/",sep=""))
     print(gc())
+    Sys.time()
     q(save = "no")
 
     """
@@ -936,13 +961,14 @@ process Counting {
 
 process rds2loom {
 
-    cpus = '32'
-    mem = '40G'
+    cpus = "${params.num_threads}"
+    mem = "${params.mem_limit}G"
     time = '04:30:00'
     
     input:
     file counts from dgecounts_ch1
 
+    publishDir "${params.projectDir}${params.outputDir}zUMIs_output", mode: 'copy'
 
     output:
     file "*.loom" into loom_files_ch
@@ -952,6 +978,7 @@ process rds2loom {
     require(yaml)
     require(Matrix)
     suppressMessages(require(R.utils))
+    Sys.time()
 
     opt <- NULL
 
@@ -979,11 +1006,10 @@ process rds2loom {
 
     ##########################
 
-    checkLoomR() #check for loomR package
-
     rds_loc <- "${counts}"
     rds_to_loom(rds_loc)
 
+    Sys.time()
     q(save = "no")
 
     """
@@ -993,16 +1019,18 @@ if(params.velocyto) {
 
     process velocyto {
         
-        cpus = '32'
-        mem = '40G'
+        cpus = "${params.num_threads}"
+        mem = "${params.mem_limit}G"
         time = '04:30:00'
 
         input:
         file bam from UB_corrected_bam_ch1
+        file barcodes from kept_barcodes_ch3
 
         """
         #!/usr/bin/env Rscript
         suppressMessages(require(R.utils))
+        Sys.time()
 
         ##########################
 
@@ -1064,7 +1092,7 @@ if(params.velocyto) {
         print(Sys.time())
 
         #prepare BC whitelist
-        bc<-data.table::fread(paste0(opt\$out_dir,"zUMIs_output/",opt\$project,"kept_barcodes.txt"),select = 1, header = T)
+        bc<-data.table::fread("${barcodes}",select = 1, header = T)
         bcpath<-paste0(opt\$out_dir,"zUMIs_output/",opt\$project,".BCwhitelist.txt")
         data.table::fwrite(bc,file = bcpath,col.names = F,row.names = F)
 
@@ -1091,7 +1119,7 @@ if(params.velocyto) {
         }else{
           velo_cmd <- paste(velo_check[1],"run -vv --umi-extension Gene -b",bcpath,"-o",paste0(opt\$out_dir,"zUMIs_output/velocity/"),umi_decision,mm_decision, "-e",opt\$project,"--samtools-threads",opt\$num_threads,"--samtools-memory",mempercpu*1000,velobam,gtf,sep=" ")
           
-          try(system(paste0(velo_cmd," > ",opt\$out_dir,"/",opt\$project,".velocityo.log.out 2>&1")))
+          try(system(paste0(velo_cmd," > ",opt\$out_dir,opt\$project,".velocityo.log.out 2>&1")))
           print("RNA velocity done!")
           
         }
@@ -1107,8 +1135,8 @@ if(params.velocyto) {
 
 process summary_stats {
 
-    cpus = '32'
-    mem = '40G'
+    cpus = "${params.num_threads}"
+    mem = "${params.mem_limit}G"
     time = '04:30:00'
 
     input:
@@ -1151,6 +1179,8 @@ process summary_stats {
     opt\$read_layout <- "${read_layout}"
     opt\$BCcount <- "${BCstats}"
 
+    input<-read.csv("${params.input_csv}")
+
     sequence_files <- as.list(NULL)
     for (i in 1:nrow(input)){
     name <- input\$name[i]
@@ -1172,7 +1202,6 @@ process summary_stats {
 
     samtoolsexc <- "samtools"
 
-    setwd(opt\$out_dir)
     featColors<-c("#1A5084", "#914614" ,"#118730","grey33","tan1","#631879FF","gold1","grey73","firebrick3")
     names(featColors)<-c("Exon","Intron+Exon","Intron","Unmapped","Ambiguity","MultiMapping","Intergenic","Unused BC","User")
     #####################################
@@ -1300,7 +1329,7 @@ process summary_stats {
     ###############
     system("wait")
     gc()
-
+    Sys.time()
     q(save = "no")
 
     """
