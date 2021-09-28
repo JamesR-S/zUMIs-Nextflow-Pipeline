@@ -12,3 +12,5 @@ Script can be run with the following command:
 nextflow run main.nf
 ```
 Nextflow parameters are set in `nextflow.config` file.
+
+A docker container designed to be used for this script can be found at https://hub.docker.com/repository/docker/jamescraufurd/zumis-nf.
