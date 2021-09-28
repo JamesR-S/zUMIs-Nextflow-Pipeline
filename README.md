@@ -14,3 +14,6 @@ nextflow run main.nf
 Nextflow parameters are set in `nextflow.config` file.
 
 A docker container designed to be used for this script can be found at https://hub.docker.com/repository/docker/jamescraufurd/zumis-nf.
+
+Credit to [Parekh et al. 2018](https://doi.org/10.1093/gigascience/giy059) for the original zUMIs pipeline. The pipeline can be found at their [github repository](https://github.com/sdparekh/zUMIs).
+
