@@ -1,8 +1,6 @@
 #!/usr/bin/perl
-# LMU Munich. AG Enard
-# A script to filter reads based on Barcode base quality.
 
-
+#script header changed to pull necessary arguments from the command line arguments. - no longer needs yaml
 $argLine = join(" ", @ARGV);
 
 BEGIN{
@@ -27,10 +25,9 @@ use lib "$zumisdir";
 use distilReads;
 use Approx;
 
-#test arguments with echo
-
+#input csv read in by new rscript.
 $zumisversion = "nf";
-open(YL,"$rscriptexc --no-environ $zumisdir/readYaml4fqfilter.R --args --input=$input --project=$project --num_threads=$num_threads --parentfq=$parentfq --BCfbases=$BCfilt1 --BCfphred=$BCfilt2 --UMIfbases=$UMIfilt1 --UMIfphred=$UMIfilt2 --pairs_file=$pairsfile |");
+open(YL,"$rscriptexc --no-environ $zumisdir/readInputCsv4fqfilter.R --args --input=$input --project=$project --num_threads=$num_threads --parentfq=$parentfq --BCfbases=$BCfilt1 --BCfphred=$BCfilt2 --UMIfbases=$UMIfilt1 --UMIfphred=$UMIfilt2 --pairs_file=$pairsfile |");
 @arg=<YL>;
 close YL;
 %argHash;
@@ -41,7 +38,6 @@ for($i=0;$i<=$#params;$i++){
   $argHash{$params[$i]}=$arg[$i];
 }
 
-# parse the fastqfiles and make a hash with file handles as key and filename.pattern as value
 $f = distilReads::argClean($argHash{"filenames"});
 $st = distilReads::argClean($argHash{"seqtype"});
 $StudyName = distilReads::argClean($argHash{"StudyName"});
@@ -51,9 +47,6 @@ $UMIfilter = distilReads::argClean($argHash{"UMIfilter"});
 $pattern = distilReads::argClean($argHash{"find_pattern"});
 $frameshift = distilReads::argClean($argHash{"correct_frameshift"});
 
-#print($pattern);
-#demult_HEK_r1.fq.gz; demult_HEK_r2.fq.gz;ACTGCTGTA
-#if find_pattern exists, readYaml4fqfilter returns  "ATTGCGCAATG character(0) character(0)"
 
 chomp($f);
 chomp($st);
@@ -67,14 +60,14 @@ chomp($frameshift);
 chomp($zumisversion);
 $isPass="pass";
 
-
+# output directories and filenames modified to support processing read pairs separately
 $outbcstats = "$project.$tmpPrefix.BCstats.txt";
 $outbam = "$outdir/.${tmpDir}_tmpMerge/$project.$tmpPrefix.filtered.tagged.bam";
 
-# Make and open all the file handles
+
 %file_handles = distilReads::makeFileHandles($f,$st,$pattern,$frameshift);
 
-# get all the filehandles in @keys
+
 @keys = sort(keys %file_handles);
 
 for($i=0;$i<=$#keys;$i++){
@@ -86,14 +79,14 @@ for($i=0;$i<=$#keys;$i++){
 		$oriBase = `basename $oriF .gz | cut -f 1 -d '.'`;
     chomp($oriBase);
 
-		#change the file name to temporary prefix for its chunk
+		#chunk prefixes updated to match those used by new read pair processing.
 		$chunk = "$outdir.${oriBase}_tmpMerge/${oriBase}${tmpPrefix}";
     open $fh, '-|', $pigz, '-dc', $chunk || die "Couldn't open file ".$chunk.". Check permissions!\n Check if it is differently zipped then .gz\n\n";
   }else {
 
 		$oriF = $fp[0];
 		$oriBase = `basename $oriF | cut -f 1 -d '.'`;
-		#change the file name to temporary prefix for its chunk
+		#chunk prefixes updated to match those used by new read pair processing.
 		$chunk = "$outdir/.${oriBase}_tmpMerge/${oriBase}${tmpPrefix}";
 
     open $fh, "<", $chunk || die "Couldn't open file ".$chunk.". Check permissions!\n Check if it is differently zipped then .gz\n\n";
@@ -107,13 +100,14 @@ $filtered = 0;
 open(BCBAM,"| $samtoolsexc view -Sb - > $outbam");
 print(BCBAM join("\t", ("@"."PG","ID:zUMIs-fqfilter","PN:zUMIs-fqfilter", "VN:$zumisversion","CL:fqfilter_v2.pl ${argLine}")) . "\n");
 
-# First file handle to start the while loop for the first file
+######################### script unchaged beyond this point ##########################################################################
+######################################################################################################################################
+
 $fh1 = $keys[0];
 @fp1 = split(":",$file_handles{$fh1});
 $count = 0;
 #$bamhead = 0;
 
-# reading the first file while others are processed in parallel within
 while(<$fh1>){
   $total++;
   $rid=$_;
@@ -125,7 +119,6 @@ while(<$fh1>){
   $p3 = $fp1[3];
   $ss3 = "yespattern";
 
-  #This block checks if the read should have certian pattern
   if($p2 =~ /^character/){
     $mcrseq = $rseq;
     $checkpattern = $rseq;
